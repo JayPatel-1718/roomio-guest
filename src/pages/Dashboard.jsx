@@ -26,6 +26,15 @@ function formatRemaining(ms) {
   return `${m}m ${s}s`;
 }
 
+function formatTimeForProgress(ms) {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60000));
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 export default function Dashboard() {
   const { state } = useLocation();
   const navigate = useNavigate();
@@ -33,6 +42,11 @@ export default function Dashboard() {
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
   const [sessionExpired, setSessionExpired] = useState(false);
+  
+  // ✅ Arrival notification modal
+  const [showArrivalNotification, setShowArrivalNotification] = useState(false);
+  const [arrivalService, setArrivalService] = useState("");
+  const [arrivalRequestId, setArrivalRequestId] = useState("");
 
   // ✅ Tabs
   const [activeTab, setActiveTab] = useState("services"); // "services" | "requests"
@@ -41,6 +55,9 @@ export default function Dashboard() {
   const [requestIds, setRequestIds] = useState([]);
   const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
   const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
+  
+  // ✅ Timer refs for progress bars
+  const timerRefs = useRef(new Map()); // Map<id, intervalId>
 
   // ✅ Laundry cooldown state
   const [laundryBlocked, setLaundryBlocked] = useState(false);
@@ -201,6 +218,9 @@ export default function Dashboard() {
     } catch {}
     setRequestIds([]);
     setRequestsMap({});
+    // Clear all timers
+    timerRefs.current.forEach((intervalId) => clearInterval(intervalId));
+    timerRefs.current.clear();
   };
 
   // ✅ Booking query to validate session
@@ -295,7 +315,87 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [housekeepingCooldownKey]);
 
-  // ✅ Live listeners for requests
+  // ✅ Calculate progress for accepted/in-progress requests
+  const calculateProgress = (request) => {
+    if (!request.estimatedTime || !request.acceptedAt) return { percentage: 0, remainingMs: 0 };
+    
+    const acceptedTime = request.acceptedAt?.toDate()?.getTime() || Date.now();
+    const estimatedMs = request.estimatedTime * 60 * 1000; // Convert minutes to ms
+    const endTime = acceptedTime + estimatedMs;
+    const now = Date.now();
+    
+    if (now >= endTime) {
+      return { percentage: 100, remainingMs: 0 };
+    }
+    
+    const elapsed = now - acceptedTime;
+    const percentage = Math.min(100, (elapsed / estimatedMs) * 100);
+    const remainingMs = Math.max(0, endTime - now);
+    
+    return { percentage, remainingMs };
+  };
+
+  // ✅ Check for arrival notifications
+  const checkArrivalNotifications = () => {
+    const now = Date.now();
+    
+    Object.values(requestsMap).forEach(request => {
+      if ((request.status === "accepted" || request.status === "in-progress") && 
+          !request.arrivalNotified && 
+          request.estimatedTime) {
+        
+        const acceptedTime = request.acceptedAt?.toDate()?.getTime() || Date.now();
+        const estimatedMs = request.estimatedTime * 60 * 1000;
+        const timeUntilArrival = acceptedTime + estimatedMs - now;
+        
+        // Show notification 2 minutes before arrival
+        if (timeUntilArrival > 0 && timeUntilArrival <= 2 * 60 * 1000) {
+          setArrivalService(request.type || "Service");
+          setArrivalRequestId(request.id);
+          setShowArrivalNotification(true);
+          
+          // Mark as notified in local state to prevent duplicate notifications
+          setRequestsMap(prev => ({
+            ...prev,
+            [request.id]: { ...prev[request.id], arrivalNotified: true }
+          }));
+        }
+      }
+    });
+  };
+
+  // ✅ Handle arrival notification confirmation
+  const handleArrivalConfirm = async () => {
+    // Remove the request from local storage
+    if (arrivalRequestId) {
+      const updatedIds = requestIds.filter(id => id !== arrivalRequestId);
+      saveStoredRequestIds(updatedIds);
+      setRequestIds(updatedIds);
+      
+      // Update Firestore to mark as completed
+      try {
+        await updateDoc(doc(db, "serviceRequests", arrivalRequestId), {
+          status: "completed",
+          completedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        console.error("Failed to update request status:", error);
+      }
+      
+      // Clear timer if exists
+      if (timerRefs.current.has(arrivalRequestId)) {
+        clearInterval(timerRefs.current.get(arrivalRequestId));
+        timerRefs.current.delete(arrivalRequestId);
+      }
+    }
+    
+    setShowArrivalNotification(false);
+    setArrivalService("");
+    setArrivalRequestId("");
+  };
+
+  // ✅ Live listeners for requests with progress tracking
   useEffect(() => {
     const existing = unsubRef.current;
 
@@ -327,10 +427,46 @@ export default function Dashboard() {
             return;
           }
           const data = snap.data();
+          const updatedData = { 
+            id, 
+            ...data,
+            // Calculate initial progress
+            ...calculateProgress(data)
+          };
+          
           setRequestsMap((prev) => ({
             ...prev,
-            [id]: { id, ...data },
+            [id]: updatedData,
           }));
+          
+          // Start progress timer for accepted/in-progress requests
+          if ((data.status === "accepted" || data.status === "in-progress") && 
+              data.estimatedTime && 
+              !timerRefs.current.has(id)) {
+            
+            const intervalId = setInterval(() => {
+              setRequestsMap(prev => {
+                if (!prev[id]) return prev;
+                const progress = calculateProgress(prev[id]);
+                return {
+                  ...prev,
+                  [id]: {
+                    ...prev[id],
+                    ...progress
+                  }
+                };
+              });
+            }, 1000); // Update every second
+            
+            timerRefs.current.set(id, intervalId);
+          }
+          
+          // Stop timer if request is completed or deleted
+          if ((data.status === "completed" || data.status === "deleted") && 
+              timerRefs.current.has(id)) {
+            clearInterval(timerRefs.current.get(id));
+            timerRefs.current.delete(id);
+          }
         },
         (err) => {
           console.error("Request snapshot error:", err);
@@ -351,8 +487,18 @@ export default function Dashboard() {
         } catch {}
       }
       existing.clear();
+      
+      // Clear all timers
+      timerRefs.current.forEach((intervalId) => clearInterval(intervalId));
+      timerRefs.current.clear();
     };
   }, [requestIds]);
+
+  // ✅ Check for arrival notifications periodically
+  useEffect(() => {
+    const interval = setInterval(checkArrivalNotifications, 30000); // Check every 30 seconds
+    return () => clearInterval(interval);
+  }, [requestsMap]);
 
   // ✅ Show session expired message
   if (sessionExpired) {
@@ -540,6 +686,28 @@ export default function Dashboard() {
     <div style={styles.page} className="safeArea">
       <GlobalStyles />
 
+      {/* ✅ ARRIVAL NOTIFICATION MODAL */}
+      {showArrivalNotification && (
+        <div style={styles.arrivalOverlay}>
+          <div style={styles.arrivalModal}>
+            <div style={styles.arrivalIcon}>🚨</div>
+            <div style={styles.arrivalTitle}>Arrival Alert!</div>
+            <div style={styles.arrivalMessage}>
+              Your {arrivalService} is arriving in approximately 2 minutes!
+            </div>
+            <div style={styles.arrivalActions}>
+              <button
+                onClick={handleArrivalConfirm}
+                style={styles.arrivalConfirmBtn}
+                className="tapButton"
+              >
+                Got it, thanks!
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={styles.backgroundDecor} aria-hidden="true">
         <div style={styles.bgCircle1} />
         <div style={styles.bgCircle2} />
@@ -716,6 +884,9 @@ export default function Dashboard() {
               <div style={styles.reqList}>
                 {requestsList.map((r) => {
                   const chip = statusChip(r.status);
+                  const isAccepted = r.status === "accepted" || r.status === "in-progress";
+                  const hasProgress = isAccepted && r.estimatedTime && r.percentage !== undefined;
+                  
                   return (
                     <div key={r.id} style={styles.reqCard}>
                       <div style={styles.reqTop}>
@@ -729,6 +900,34 @@ export default function Dashboard() {
                       <div style={styles.reqMeta}>
                         Room {r.roomNumber ?? safeRoomNumber} • {formatTime(r.createdAt)}
                       </div>
+                      
+                      {/* ✅ PROGRESS BAR FOR ACCEPTED REQUESTS */}
+                      {hasProgress && (
+                        <div style={styles.progressSection}>
+                          <div style={styles.progressHeader}>
+                            <span style={styles.progressLabel}>
+                              Arriving in {formatTimeForProgress(r.remainingMs || 0)}
+                            </span>
+                            <span style={styles.progressPercentage}>
+                              {Math.round(r.percentage || 0)}%
+                            </span>
+                          </div>
+                          <div style={styles.progressBar}>
+                            <div 
+                              style={{
+                                ...styles.progressFill,
+                                width: `${r.percentage || 0}%`,
+                                backgroundColor: r.status === "in-progress" ? "#2563EB" : "#16A34A"
+                              }}
+                            />
+                          </div>
+                          <div style={styles.progressSubtext}>
+                            Estimated time: {r.estimatedTime} minutes
+                            {r.remainingMs > 0 && ` • ${formatTimeForProgress(r.remainingMs)} remaining`}
+                          </div>
+                        </div>
+                      )}
+                      
                       <div style={styles.reqIdRow}>
                         <div style={styles.reqIdLabel}>ID</div>
                         <div style={styles.reqIdValue}>{r.id}</div>
@@ -808,6 +1007,106 @@ function GlobalStyles() {
 
 // ✅ Add expired session styles
 const styles = {
+  // ✅ Arrival Notification Styles
+  arrivalOverlay: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 9999,
+    padding: 20,
+  },
+  arrivalModal: {
+    backgroundColor: "#fff",
+    borderRadius: 24,
+    padding: 30,
+    maxWidth: 400,
+    width: "100%",
+    textAlign: "center",
+    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.3)",
+    border: "2px solid #2563EB",
+  },
+  arrivalIcon: {
+    fontSize: 60,
+    marginBottom: 20,
+    animation: "pulse 1.5s infinite",
+  },
+  arrivalTitle: {
+    fontSize: 24,
+    fontWeight: 900,
+    color: "#111827",
+    marginBottom: 12,
+  },
+  arrivalMessage: {
+    fontSize: 16,
+    color: "#6B7280",
+    marginBottom: 24,
+    lineHeight: 1.5,
+  },
+  arrivalActions: {
+    display: "flex",
+    gap: 12,
+  },
+  arrivalConfirmBtn: {
+    flex: 1,
+    backgroundColor: "#16A34A",
+    color: "#fff",
+    border: "none",
+    padding: "16px 24px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    transition: "all 0.2s ease",
+  },
+  
+  // ✅ Progress Bar Styles
+  progressSection: {
+    marginTop: 16,
+    padding: 14,
+    backgroundColor: "#F9FAFB",
+    borderRadius: 12,
+    border: "1px solid #E5E7EB",
+  },
+  progressHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  progressLabel: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#111827",
+  },
+  progressPercentage: {
+    fontSize: 13,
+    fontWeight: 900,
+    color: "#2563EB",
+  },
+  progressBar: {
+    height: 8,
+    backgroundColor: "#E5E7EB",
+    borderRadius: 4,
+    overflow: "hidden",
+    marginBottom: 8,
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 4,
+    transition: "width 1s ease",
+  },
+  progressSubtext: {
+    fontSize: 11,
+    color: "#6B7280",
+    fontWeight: 700,
+  },
+  
   expiredContainer: {
     minHeight: "100vh",
     backgroundColor: "#F9FAFB",
@@ -936,3 +1235,14 @@ const styles = {
   version: { fontSize: 11, color: "#9CA3AF", fontWeight: 800, letterSpacing: 0.8 },
   versionDivider: { width: 4, height: 4, borderRadius: 2, backgroundColor: "#D1D5DB" },
 };
+
+// Add pulse animation for arrival icon
+const style = document.createElement('style');
+style.textContent = `
+@keyframes pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+`;
+document.head.appendChild(style);
