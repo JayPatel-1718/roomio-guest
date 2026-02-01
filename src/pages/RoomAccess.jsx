@@ -1,6 +1,6 @@
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMemo, useState } from "react";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { collection, query, where, getDocs, updateDoc, doc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
 
 export default function RoomAccess() {
@@ -39,33 +39,30 @@ export default function RoomAccess() {
         collection(db, "guests"),
         where("adminEmail", "==", adminEmail),
         where("mobile", "==", mobile),
-        where("isActive", "==", true) // ✅ will fail if admin checked out guest
+        where("isActive", "==", true)
       );
 
       const snap = await getDocs(q);
 
-      // ✅ if admin checked out → guest doc becomes isActive:false → snap.empty
       if (snap.empty) {
-        setError(
-          "No active booking found. This guest may have checked out or access has expired."
-        );
+        setError("No active booking found.");
         return;
       }
 
-      const guest = snap.docs[0].data();
+      const guestDoc = snap.docs[0];
+      const guest = guestDoc.data();
 
-      // expiry check
-      const checkout = guest.checkoutAt?.toDate?.();
-      if (checkout && checkout < new Date()) {
-        setError("Booking expired");
+      // ✅ CHECK IF ALREADY LOGGED IN
+      if (guest.isLoggedIn) {
+        setError("This mobile number is already logged in on another device.");
         return;
       }
 
-      // adminId required for service requests routing
-      if (!guest.adminId) {
-        setError("Admin mapping missing. Please contact reception.");
-        return;
-      }
+      // ✅ UPDATE: Mark as logged in
+      await updateDoc(guestDoc.ref, {
+        isLoggedIn: true,
+        lastLogin: serverTimestamp()
+      });
 
       navigate("/dashboard", {
         state: {
@@ -74,6 +71,7 @@ export default function RoomAccess() {
           adminEmail,
           mobile,
           adminId: guest.adminId,
+          guestDocId: guestDoc.id, // Store for logout
         },
       });
     } catch (e) {

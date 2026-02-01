@@ -202,26 +202,47 @@ export default function Menu() {
     return labels[category] || category;
   };
 
+  const getCategoryIcon = (category) => {
+    const icons = {
+      breakfast: "🍳",
+      lunch: "🍱",
+      dinner: "🍽️",
+      all: "📋",
+    };
+    return icons[category] || "🍴";
+  };
+
   return (
     <div style={styles.page}>
-      {/* Header */}
+      {/* Header with fixed position */}
       <div style={styles.header}>
         <button
           onClick={() => navigate("/dashboard", { state })}
           style={styles.backBtn}
         >
-          ← Back
+          ←
         </button>
-        <div style={styles.title}>Food Menu</div>
-        <div style={{ width: 40 }} /> {/* Spacer */}
+        <div style={styles.titleContainer}>
+          <div style={styles.title}>Food Menu</div>
+          <div style={styles.subtitle}>Room {roomNumber || "—"}</div>
+        </div>
+        <div style={styles.cartIndicator}>
+          {Object.keys(cart).length > 0 && (
+            <div style={styles.cartBadge}>
+              {Object.values(cart).reduce((sum, count) => sum + count, 0)}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Loading State */}
       {loading && (
         <div style={styles.loadingState}>
-          <div style={styles.spinner}>⏳</div>
+          <div style={styles.spinnerContainer}>
+            <div style={styles.spinner}></div>
+          </div>
           <div style={styles.loadingText}>Loading menu...</div>
-          <div style={styles.loadingSubtext}>Connecting to database...</div>
+          <div style={styles.loadingSubtext}>Please wait</div>
         </div>
       )}
 
@@ -251,115 +272,141 @@ export default function Menu() {
       {/* Content */}
       {!loading && !error && (
         <>
-          {/* Categories */}
+          {/* Categories - Horizontal Scroll */}
           {menuItems.length > 0 && (
-            <div style={styles.categories}>
-              {categories.map((cat) => (
-                <div
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
-                  style={{
-                    ...styles.categoryTab,
-                    ...(selectedCategory === cat ? styles.categoryTabActive : {}),
-                  }}
-                >
-                  {getCategoryLabel(cat)}
-                </div>
-              ))}
+            <div style={styles.categoriesContainer}>
+              <div style={styles.categoriesScroll}>
+                {categories.map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => setSelectedCategory(cat)}
+                    style={{
+                      ...styles.categoryTab,
+                      ...(selectedCategory === cat ? styles.categoryTabActive : {}),
+                    }}
+                  >
+                    <span style={styles.categoryIcon}>
+                      {getCategoryIcon(cat)}
+                    </span>
+                    <span style={styles.categoryText}>
+                      {getCategoryLabel(cat)}
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
           {/* Menu List */}
           <div style={styles.menuList}>
             {filteredItems.length === 0 && menuItems.length > 0 ? (
-              <div style={styles.empty}>
-                No {getCategoryLabel(selectedCategory).toLowerCase()} items
-                available.
+              <div style={styles.emptyCategory}>
+                <div style={styles.emptyCategoryIcon}>🍽️</div>
+                <div style={styles.emptyCategoryText}>
+                  No {getCategoryLabel(selectedCategory).toLowerCase()} items available.
+                </div>
               </div>
             ) : (
               filteredItems.map((item) => (
                 <div key={item.id} style={styles.menuItem}>
-                  <div style={styles.itemInfo}>
-                    <div style={styles.itemName}>{item.name || "Unnamed Item"}</div>
+                  <div style={styles.itemContent}>
+                    <div style={styles.itemHeader}>
+                      <div style={styles.itemName}>{item.name || "Unnamed Item"}</div>
+                      {item.category && (
+                        <div style={styles.itemCategoryTag}>
+                          {getCategoryIcon(item.category)} {getCategoryLabel(item.category)}
+                        </div>
+                      )}
+                    </div>
+                    
                     {item.description && (
                       <div style={styles.itemDesc}>{item.description}</div>
                     )}
-                    <div style={styles.itemPrice}>
-                      ₹{typeof item.price === "number" ? item.price : "—"}
-                    </div>
-                    {item.category && (
-                      <div style={styles.categoryBadge}>
-                        {getCategoryLabel(item.category)}
+                    
+                    <div style={styles.itemFooter}>
+                      <div style={styles.itemPrice}>
+                        <span style={styles.priceSymbol}>₹</span>
+                        <span style={styles.priceValue}>
+                          {typeof item.price === "number" ? item.price : "—"}
+                        </span>
                       </div>
-                    )}
-                  </div>
-                  <div style={styles.itemActions}>
-                    <button
-                      onClick={() => removeFromCart(item.id)}
-                      style={{
-                        ...styles.minusBtn,
-                        opacity: !cart[item.id] ? 0.5 : 1,
-                        cursor: !cart[item.id] ? "not-allowed" : "pointer",
-                      }}
-                      disabled={!cart[item.id]}
-                    >
-                      -
-                    </button>
-                    <span style={styles.quantity}>{cart[item.id] || 0}</span>
-                    <button onClick={() => addToCart(item.id)} style={styles.plusBtn}>
-                      +
-                    </button>
+                      <div style={styles.itemActions}>
+                        <button
+                          onClick={() => removeFromCart(item.id)}
+                          style={{
+                            ...styles.actionBtn,
+                            ...styles.minusBtn,
+                            opacity: !cart[item.id] ? 0.5 : 1,
+                            cursor: !cart[item.id] ? "not-allowed" : "pointer",
+                          }}
+                          disabled={!cart[item.id]}
+                        >
+                          −
+                        </button>
+                        <div style={styles.quantityDisplay}>
+                          <span style={styles.quantity}>{cart[item.id] || 0}</span>
+                        </div>
+                        <button 
+                          onClick={() => addToCart(item.id)} 
+                          style={{
+                            ...styles.actionBtn,
+                            ...styles.plusBtn,
+                          }}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))
             )}
           </div>
 
-          {/* Cart Footer */}
-          {totalAmount > 0 && (
-            <div style={styles.footer}>
-              <div style={styles.cartInfo}>
-                <div style={styles.totalRow}>
-                  <span>Total:</span>
-                  <span style={styles.totalValue}>₹{totalAmount}</span>
-                </div>
-                <div style={styles.itemCount}>
-                  {Object.values(cart).reduce((sum, count) => sum + count, 0)}{" "}
-                  items
-                </div>
-              </div>
-              <button
-                onClick={placeOrder}
-                disabled={ordering}
-                style={{
-                  ...styles.orderBtn,
-                  opacity: ordering ? 0.7 : 1,
-                  cursor: ordering ? "not-allowed" : "pointer",
-                }}
-              >
-                {ordering ? "Placing Order..." : "🛒 Place Order"}
-              </button>
-            </div>
-          )}
-
-          {/* Empty State */}
+          {/* Empty State - No Menu Items */}
           {menuItems.length === 0 && (
             <div style={styles.emptyState}>
               <div style={styles.emptyIcon}>🍽️</div>
-              <div style={styles.emptyText}>No Menu Items Available</div>
-              <div style={styles.emptySubtext}>
+              <div style={styles.emptyTitle}>Menu Not Available</div>
+              <div style={styles.emptyMessage}>
                 The hotel hasn't added any menu items yet. Please check back later
                 or contact the front desk.
-              </div>
-              <div style={styles.debugInfo}>
-                <div><strong>Debug Info:</strong></div>
-                <div>Admin ID: {adminId || "Not set"}</div>
-                <div>Room: {roomNumber || "Not set"}</div>
-                <div>Guest: {guestName || "Not set"}</div>
               </div>
             </div>
           )}
         </>
+      )}
+
+      {/* Fixed Cart Footer */}
+      {totalAmount > 0 && (
+        <div style={styles.cartFooter}>
+          <div style={styles.cartSummary}>
+            <div style={styles.cartItemsCount}>
+              {Object.values(cart).reduce((sum, count) => sum + count, 0)} items
+            </div>
+            <div style={styles.cartTotal}>
+              <span style={styles.totalLabel}>Total:</span>
+              <span style={styles.totalAmount}>₹{totalAmount}</span>
+            </div>
+          </div>
+          <button
+            onClick={placeOrder}
+            disabled={ordering}
+            style={{
+              ...styles.orderBtn,
+              opacity: ordering ? 0.7 : 1,
+            }}
+          >
+            {ordering ? (
+              <>
+                <span style={styles.orderSpinner}></span>
+                Placing Order...
+              </>
+            ) : (
+              "Place Order"
+            )}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -369,321 +416,468 @@ const styles = {
   page: {
     minHeight: "100vh",
     backgroundColor: "#F9FAFB",
-    padding: 16,
-    fontFamily:
-      '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif',
     position: "relative",
-    overflowY: "auto",
-    paddingBottom: 120,
-  },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 20,
-  },
-  backBtn: {
-    background: "none",
-    border: "none",
-    fontSize: 16,
-    color: "#2563EB",
-    fontWeight: "bold",
-    cursor: "pointer",
-    textDecoration: "underline",
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: "bold",
-    textAlign: "center",
+    paddingBottom: "env(safe-area-inset-bottom, 0px)",
+    WebkitTapHighlightColor: "transparent",
   },
 
+  // Header
+  header: {
+    position: "sticky",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 100,
+    backgroundColor: "#FFFFFF",
+    borderBottom: "1px solid #E5E7EB",
+    padding: "12px 16px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+    paddingTop: "max(12px, env(safe-area-inset-top))",
+  },
+  backBtn: {
+    width: "44px",
+    height: "44px",
+    borderRadius: "12px",
+    backgroundColor: "rgba(37, 99, 235, 0.1)",
+    color: "#2563EB",
+    border: "none",
+    fontSize: "20px",
+    fontWeight: "bold",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  titleContainer: {
+    flex: 1,
+    marginLeft: "12px",
+  },
+  title: {
+    fontSize: "18px",
+    fontWeight: "700",
+    color: "#111827",
+    textAlign: "center",
+    letterSpacing: "-0.02em",
+  },
+  subtitle: {
+    fontSize: "13px",
+    color: "#6B7280",
+    textAlign: "center",
+    marginTop: "2px",
+    fontWeight: "500",
+  },
+  cartIndicator: {
+    width: "44px",
+    height: "44px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  cartBadge: {
+    width: "20px",
+    height: "20px",
+    borderRadius: "10px",
+    backgroundColor: "#DC2626",
+    color: "#FFFFFF",
+    fontSize: "12px",
+    fontWeight: "bold",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  // Loading State
   loadingState: {
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 100,
+    padding: "80px 20px",
     textAlign: "center",
-    gap: 12,
+  },
+  spinnerContainer: {
+    width: "60px",
+    height: "60px",
+    marginBottom: "20px",
   },
   spinner: {
-    fontSize: 48,
+    width: "100%",
+    height: "100%",
+    borderRadius: "50%",
+    border: "3px solid rgba(37, 99, 235, 0.1)",
+    borderTopColor: "#2563EB",
+    animation: "spin 1s linear infinite",
   },
   loadingText: {
-    fontSize: 16,
+    fontSize: "17px",
     fontWeight: "600",
-    color: "#6B7280",
+    color: "#374151",
+    marginBottom: "8px",
   },
   loadingSubtext: {
-    fontSize: 14,
+    fontSize: "14px",
     color: "#9CA3AF",
   },
 
+  // Error State
   errorState: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 60,
+    padding: "40px 20px",
+    maxWidth: "400px",
+    margin: "0 auto",
     textAlign: "center",
-    gap: 12,
-    padding: 20,
-    maxWidth: 500,
-    margin: "60px auto",
   },
   errorIcon: {
-    fontSize: 64,
+    fontSize: "48px",
+    marginBottom: "16px",
   },
   errorText: {
-    fontSize: 20,
-    fontWeight: "bold",
+    fontSize: "18px",
+    fontWeight: "700",
     color: "#DC2626",
-    marginTop: 16,
+    marginBottom: "12px",
   },
   errorSubtext: {
-    fontSize: 14,
+    fontSize: "14px",
     color: "#6B7280",
-    lineHeight: 1.5,
-    marginTop: 8,
-    padding: "12px 16px",
+    lineHeight: "1.5",
     backgroundColor: "#FEE2E2",
-    borderRadius: 8,
-    border: "1px solid #FCA5A5",
+    padding: "12px",
+    borderRadius: "8px",
+    marginBottom: "20px",
   },
   errorHelp: {
-    fontSize: 13,
+    fontSize: "13px",
     color: "#374151",
     textAlign: "left",
-    marginTop: 16,
-    padding: 16,
     backgroundColor: "#F3F4F6",
-    borderRadius: 8,
-    width: "100%",
+    padding: "16px",
+    borderRadius: "8px",
+    marginBottom: "20px",
   },
   errorList: {
-    textAlign: "left",
-    marginTop: 8,
-    paddingLeft: 20,
+    margin: "8px 0 0 0",
+    paddingLeft: "20px",
+    lineHeight: "1.6",
   },
   retryBtn: {
-    marginTop: 16,
-    padding: "12px 24px",
+    width: "100%",
+    padding: "14px",
     backgroundColor: "#2563EB",
-    color: "#fff",
+    color: "#FFFFFF",
     border: "none",
-    borderRadius: 8,
-    fontSize: 14,
+    borderRadius: "12px",
+    fontSize: "16px",
     fontWeight: "600",
     cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "8px",
   },
 
-  categories: {
+  // Categories
+  categoriesContainer: {
+    backgroundColor: "#FFFFFF",
+    borderBottom: "1px solid #E5E7EB",
+    padding: "12px 16px",
+    position: "sticky",
+    top: "69px",
+    zIndex: 50,
+  },
+  categoriesScroll: {
     display: "flex",
-    gap: 8,
-    marginBottom: 16,
-    flexWrap: "wrap",
+    overflowX: "auto",
+    gap: "8px",
+    paddingBottom: "4px",
+    WebkitOverflowScrolling: "touch",
+    scrollbarWidth: "none",
+    msOverflowStyle: "none",
+  },
+  categoriesScroll: {
+    "&::-webkit-scrollbar": {
+      display: "none",
+    },
   },
   categoryTab: {
-    padding: "8px 16px",
-    borderRadius: 20,
-    backgroundColor: "#fff",
-    color: "#6B7280",
-    fontWeight: "600",
-    fontSize: 14,
-    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "10px 16px",
+    backgroundColor: "#F9FAFB",
     border: "1px solid #E5E7EB",
+    borderRadius: "20px",
+    fontSize: "14px",
+    fontWeight: "500",
+    color: "#6B7280",
+    whiteSpace: "nowrap",
+    cursor: "pointer",
     transition: "all 0.2s",
+    flexShrink: 0,
+    outline: "none",
   },
   categoryTabActive: {
     backgroundColor: "rgba(37, 99, 235, 0.1)",
     color: "#2563EB",
     borderColor: "#2563EB",
-    fontWeight: "bold",
+    fontWeight: "600",
+  },
+  categoryIcon: {
+    fontSize: "16px",
+  },
+  categoryText: {
+    fontSize: "14px",
   },
 
+  // Menu List
   menuList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-    marginBottom: 20,
+    padding: "16px",
+    paddingBottom: "100px",
   },
   menuItem: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: "16px",
+    marginBottom: "12px",
+    padding: "16px",
+    border: "1px solid #E5E7EB",
+    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05)",
+    transition: "transform 0.2s",
+    ":active": {
+      transform: "scale(0.995)",
+    },
+  },
+  itemContent: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+  },
+  itemHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: "12px",
+  },
+  itemName: {
+    fontSize: "16px",
+    fontWeight: "600",
+    color: "#111827",
+    lineHeight: "1.4",
+    flex: 1,
+  },
+  itemCategoryTag: {
+    fontSize: "11px",
+    fontWeight: "500",
+    color: "#6B7280",
+    backgroundColor: "#F3F4F6",
+    padding: "4px 8px",
+    borderRadius: "12px",
+    whiteSpace: "nowrap",
+  },
+  itemDesc: {
+    fontSize: "14px",
+    color: "#6B7280",
+    lineHeight: "1.5",
+  },
+  itemFooter: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: 16,
-    borderRadius: 12,
-    backgroundColor: "#fff",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.05)",
-    border: "1px solid #E5E7EB",
-  },
-  itemInfo: {
-    flex: 1,
-    minWidth: 0,
-    marginRight: 12,
-  },
-  itemName: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: "#111827",
-    marginBottom: 4,
-  },
-  itemDesc: {
-    fontSize: 13,
-    color: "#6B7280",
-    marginTop: 4,
-    marginBottom: 6,
-    lineHeight: 1.4,
+    marginTop: "8px",
   },
   itemPrice: {
-    fontSize: 15,
-    color: "#16A34A",
-    fontWeight: "bold",
-    marginTop: 4,
+    display: "flex",
+    alignItems: "baseline",
+    gap: "2px",
   },
-  categoryBadge: {
-    display: "inline-block",
-    padding: "4px 10px",
-    borderRadius: 12,
-    backgroundColor: "#F3F4F6",
-    color: "#6B7280",
-    fontSize: 11,
+  priceSymbol: {
+    fontSize: "14px",
+    color: "#16A34A",
     fontWeight: "600",
-    marginTop: 6,
-    textTransform: "capitalize",
+  },
+  priceValue: {
+    fontSize: "20px",
+    color: "#16A34A",
+    fontWeight: "700",
   },
   itemActions: {
     display: "flex",
     alignItems: "center",
-    gap: 8,
-    flexShrink: 0,
+    gap: "12px",
+  },
+  actionBtn: {
+    width: "36px",
+    height: "36px",
+    borderRadius: "18px",
+    border: "none",
+    fontSize: "20px",
+    fontWeight: "bold",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    userSelect: "none",
   },
   minusBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
     backgroundColor: "rgba(220, 38, 38, 0.1)",
     color: "#DC2626",
-    border: "1px solid #DC2626",
-    fontSize: 18,
-    fontWeight: "bold",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
+    border: "1px solid #FCA5A5",
   },
   plusBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
     backgroundColor: "rgba(37, 99, 235, 0.1)",
     color: "#2563EB",
-    border: "1px solid #2563EB",
-    fontSize: 18,
-    fontWeight: "bold",
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
+    border: "1px solid #93C5FD",
+  },
+  quantityDisplay: {
+    minWidth: "36px",
+    textAlign: "center",
   },
   quantity: {
-    width: 28,
-    textAlign: "center",
-    fontWeight: "bold",
-    fontSize: 14,
+    fontSize: "16px",
+    fontWeight: "600",
     color: "#111827",
   },
 
-  footer: {
+  // Empty States
+  emptyCategory: {
+    padding: "60px 20px",
+    textAlign: "center",
+  },
+  emptyCategoryIcon: {
+    fontSize: "48px",
+    marginBottom: "16px",
+    opacity: 0.5,
+  },
+  emptyCategoryText: {
+    fontSize: "16px",
+    color: "#6B7280",
+    lineHeight: "1.5",
+  },
+  
+  emptyState: {
+    padding: "80px 20px",
+    textAlign: "center",
+  },
+  emptyIcon: {
+    fontSize: "64px",
+    marginBottom: "20px",
+    opacity: 0.3,
+  },
+  emptyTitle: {
+    fontSize: "18px",
+    fontWeight: "600",
+    color: "#6B7280",
+    marginBottom: "12px",
+  },
+  emptyMessage: {
+    fontSize: "15px",
+    color: "#9CA3AF",
+    lineHeight: "1.6",
+    maxWidth: "300px",
+    margin: "0 auto",
+  },
+
+  // Cart Footer
+  cartFooter: {
     position: "fixed",
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: "#fff",
-    borderTop: "2px solid #E5E7EB",
-    boxShadow: "0 -4px 12px rgba(0,0,0,0.08)",
-    padding: 16,
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
+    backgroundColor: "#FFFFFF",
+    borderTop: "1px solid #E5E7EB",
+    padding: "16px",
+    boxShadow: "0 -4px 12px rgba(0, 0, 0, 0.08)",
+    paddingBottom: "calc(16px + env(safe-area-inset-bottom, 0px))",
+    zIndex: 100,
   },
-  cartInfo: {
+  cartSummary: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
+    marginBottom: "16px",
   },
-  totalRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    fontSize: 16,
-    fontWeight: "bold",
-  },
-  totalValue: {
-    color: "#16A34A",
-    fontSize: 20,
-    fontWeight: "900",
-  },
-  itemCount: {
-    fontSize: 13,
+  cartItemsCount: {
+    fontSize: "14px",
     color: "#6B7280",
-    fontWeight: "600",
+    fontWeight: "500",
+  },
+  cartTotal: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: "8px",
+  },
+  totalLabel: {
+    fontSize: "16px",
+    color: "#6B7280",
+    fontWeight: "500",
+  },
+  totalAmount: {
+    fontSize: "24px",
+    color: "#16A34A",
+    fontWeight: "700",
   },
   orderBtn: {
     width: "100%",
-    padding: 14,
-    borderRadius: 12,
+    padding: "16px",
     backgroundColor: "#16A34A",
-    color: "#fff",
+    color: "#FFFFFF",
     border: "none",
-    fontWeight: "bold",
-    fontSize: 16,
-    transition: "background-color 0.2s",
-    boxShadow: "0 4px 12px rgba(22, 163, 74, 0.25)",
-  },
-
-  emptyState: {
+    borderRadius: "14px",
+    fontSize: "17px",
+    fontWeight: "600",
+    cursor: "pointer",
     display: "flex",
-    flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 80,
-    textAlign: "center",
-    gap: 8,
+    gap: "8px",
+    transition: "all 0.2s",
+    boxShadow: "0 4px 12px rgba(22, 163, 74, 0.25)",
+    ":active": {
+      transform: "scale(0.98)",
+    },
   },
-  emptyIcon: {
-    fontSize: 64,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#6B7280",
-    marginTop: 16,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: "#9CA3AF",
-    maxWidth: 300,
-    lineHeight: 1.5,
-    marginTop: 8,
-  },
-  debugInfo: {
-    marginTop: 24,
-    padding: 16,
-    backgroundColor: "#F3F4F6",
-    borderRadius: 8,
-    color: "#374151",
-    fontSize: 12,
-    textAlign: "left",
-    width: "100%",
-    maxWidth: 300,
-    lineHeight: 1.6,
+  orderSpinner: {
+    width: "20px",
+    height: "20px",
+    borderRadius: "50%",
+    border: "2px solid rgba(255, 255, 255, 0.3)",
+    borderTopColor: "#FFFFFF",
+    animation: "spin 1s linear infinite",
   },
 
-  empty: {
-    textAlign: "center",
-    color: "#6B7280",
-    fontSize: 14,
-    padding: 20,
-    marginTop: 20,
+  // Keyframes for spinner
+  "@keyframes spin": {
+    to: {
+      transform: "rotate(360deg)",
+    },
   },
 };
+
+// Add the keyframes globally
+if (typeof document !== "undefined" && !document.getElementById("menu-spin-kf")) {
+  const styleEl = document.createElement("style");
+  styleEl.id = "menu-spin-kf";
+  styleEl.innerHTML = `
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    /* Hide scrollbar for categories */
+    .categories-scroll::-webkit-scrollbar {
+      display: none;
+    }
+    
+    /* Better touch targets */
+    @media (max-width: 640px) {
+      button, [role="button"] {
+        min-height: 44px;
+        min-width: 44px;
+      }
+    }
+  `;
+  document.head.appendChild(styleEl);
+}
