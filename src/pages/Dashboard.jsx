@@ -48,13 +48,24 @@ export default function Dashboard() {
   const [arrivalService, setArrivalService] = useState("");
   const [arrivalRequestId, setArrivalRequestId] = useState("");
 
+  // ✅ Completion notification modal
+  const [showCompletionModal, setShowCompletionModal] = useState(false);
+  const [completedService, setCompletedService] = useState("");
+  const [completedOrderId, setCompletedOrderId] = useState("");
+
   // ✅ Tabs
-  const [activeTab, setActiveTab] = useState("services"); // "services" | "requests"
+  const [activeTab, setActiveTab] = useState("services"); // "services" | "requests" | "food"
 
   // ✅ Request tracking state
   const [requestIds, setRequestIds] = useState([]);
   const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
   const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
+  
+  // ✅ Food order tracking state
+  const [orderIds, setOrderIds] = useState([]);
+  const [ordersMap, setOrdersMap] = useState({});
+  const [orderStatuses, setOrderStatuses] = useState({}); // Track completion notifications
+  const foodOrderUnsubRef = useRef(null);
   
   // ✅ Timer refs for progress bars
   const timerRefs = useRef(new Map()); // Map<id, intervalId>
@@ -86,12 +97,19 @@ export default function Dashboard() {
     return `${name.slice(0, 2)}***@${domain}`;
   }, [safeAdminEmail]);
 
-  // 🔑 localStorage key for this guest session
+  // 🔑 localStorage keys
   const storageKey = useMemo(() => {
     if (!adminId) return null;
     if (!safeMobile || safeMobile === "—") return null;
     if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
     return `roomio:requests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
+  }, [adminId, safeMobile, roomNumberForQuery]);
+
+  const foodOrdersStorageKey = useMemo(() => {
+    if (!adminId) return null;
+    if (!safeMobile || safeMobile === "—") return null;
+    if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
+    return `roomio:foodOrders:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
 
   const laundryCooldownKey = useMemo(() => {
@@ -211,6 +229,33 @@ export default function Dashboard() {
     setRequestIds(next);
   };
 
+  // Load stored food order IDs
+  const loadStoredOrderIds = () => {
+    if (!foodOrdersStorageKey) return [];
+    try {
+      const raw = localStorage.getItem(foodOrdersStorageKey);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveStoredOrderIds = (ids) => {
+    if (!foodOrdersStorageKey) return;
+    try {
+      localStorage.setItem(foodOrdersStorageKey, JSON.stringify(ids));
+    } catch {}
+  };
+
+  const addOrderIdToStorage = (id) => {
+    if (!foodOrdersStorageKey) return;
+    const current = loadStoredOrderIds();
+    const next = [id, ...current.filter((x) => x !== id)].slice(0, 30);
+    saveStoredOrderIds(next);
+    setOrderIds(next);
+  };
+
   const clearRequestHistory = () => {
     if (!storageKey) return;
     try {
@@ -221,6 +266,16 @@ export default function Dashboard() {
     // Clear all timers
     timerRefs.current.forEach((intervalId) => clearInterval(intervalId));
     timerRefs.current.clear();
+  };
+
+  const clearFoodOrderHistory = () => {
+    if (!foodOrdersStorageKey) return;
+    try {
+      localStorage.removeItem(foodOrdersStorageKey);
+    } catch {}
+    setOrderIds([]);
+    setOrdersMap({});
+    setOrderStatuses({});
   };
 
   // ✅ Booking query to validate session
@@ -259,7 +314,10 @@ export default function Dashboard() {
     if (!state) return;
     const ids = loadStoredRequestIds();
     setRequestIds(ids);
-  }, [state, storageKey]);
+    
+    const orderIds = loadStoredOrderIds();
+    setOrderIds(orderIds);
+  }, [state, storageKey, foodOrdersStorageKey]);
 
   // ✅ Laundry cooldown timer
   useEffect(() => {
@@ -317,27 +375,11 @@ export default function Dashboard() {
 
   // ✅ Calculate progress for accepted/in-progress requests
   const calculateProgress = (request) => {
-    // Debug log to see what data we're getting
-    console.log("Calculating progress for:", {
-      id: request.id,
-      status: request.status,
-      estimatedTime: request.estimatedTime,
-      acceptedAt: request.acceptedAt,
-      hasAcceptedAt: !!request.acceptedAt,
-      acceptedAtMillis: request.acceptedAt?.toMillis ? request.acceptedAt.toMillis() : null
-    });
-    
     if (!request.estimatedTime) {
-      console.log("Missing estimatedTime", {
-        estimatedTime: request.estimatedTime
-      });
       return { percentage: 0, remainingMs: request.estimatedTime ? request.estimatedTime * 60 * 1000 : 0 };
     }
     
     if (!request.acceptedAt) {
-      console.log("Missing acceptedAt", {
-        acceptedAt: request.acceptedAt
-      });
       return { percentage: 0, remainingMs: request.estimatedTime * 60 * 1000 };
     }
     
@@ -357,7 +399,6 @@ export default function Dashboard() {
     }
     // Fallback to current time
     else {
-      console.log("Could not parse acceptedAt, using current time");
       acceptedTime = Date.now();
     }
     
@@ -373,16 +414,49 @@ export default function Dashboard() {
     const percentage = Math.min(100, (elapsed / estimatedMs) * 100);
     const remainingMs = Math.max(0, endTime - now);
     
-    console.log("Progress calculated:", {
-      acceptedTime,
-      estimatedMs,
-      endTime,
-      now,
-      elapsed,
-      percentage,
-      remainingMs,
-      remainingMinutes: Math.floor(remainingMs / 60000)
-    });
+    return { percentage, remainingMs };
+  };
+
+  // ✅ Calculate food order progress
+  const calculateFoodProgress = (order) => {
+    if (!order.estimatedTime) {
+      return { percentage: 0, remainingMs: order.estimatedTime ? order.estimatedTime * 60 * 1000 : 0 };
+    }
+    
+    if (!order.acceptedAt) {
+      return { percentage: 0, remainingMs: order.estimatedTime * 60 * 1000 };
+    }
+    
+    let acceptedTime;
+    
+    // Check if acceptedAt is a Firestore Timestamp
+    if (order.acceptedAt.toMillis) {
+      acceptedTime = order.acceptedAt.toMillis();
+    } 
+    // Check if it's a string timestamp
+    else if (typeof order.acceptedAt === 'string') {
+      acceptedTime = new Date(order.acceptedAt).getTime();
+    }
+    // Check if it's a number
+    else if (typeof order.acceptedAt === 'number') {
+      acceptedTime = order.acceptedAt;
+    }
+    // Fallback to current time
+    else {
+      acceptedTime = Date.now();
+    }
+    
+    const estimatedMs = order.estimatedTime * 60 * 1000;
+    const endTime = acceptedTime + estimatedMs;
+    const now = Date.now();
+    
+    if (now >= endTime) {
+      return { percentage: 100, remainingMs: 0 };
+    }
+    
+    const elapsed = now - acceptedTime;
+    const percentage = Math.min(100, (elapsed / estimatedMs) * 100);
+    const remainingMs = Math.max(0, endTime - now);
     
     return { percentage, remainingMs };
   };
@@ -402,7 +476,6 @@ export default function Dashboard() {
         
         // Show notification 2 minutes before arrival
         if (timeUntilArrival > 0 && timeUntilArrival <= 2 * 60 * 1000) {
-          console.log("Showing arrival notification for:", request.id, request.type);
           setArrivalService(request.type || "Service");
           setArrivalRequestId(request.id);
           setShowArrivalNotification(true);
@@ -415,6 +488,21 @@ export default function Dashboard() {
         }
       }
     });
+  };
+
+  // ✅ Check for food order completion notifications
+  const checkFoodOrderNotifications = (order) => {
+    if (order.status === "completed" && !orderStatuses[order.id]?.notified) {
+      setCompletedService(order.item || "Food Order");
+      setCompletedOrderId(order.id);
+      setShowCompletionModal(true);
+      
+      // Mark as notified
+      setOrderStatuses(prev => ({
+        ...prev,
+        [order.id]: { ...prev[order.id], notified: true }
+      }));
+    }
   };
 
   // ✅ Handle arrival notification confirmation
@@ -448,10 +536,28 @@ export default function Dashboard() {
     setArrivalRequestId("");
   };
 
+  // ✅ Handle completion notification confirmation
+  const handleCompletionConfirm = () => {
+    if (completedOrderId) {
+      // Remove the order from local storage
+      const updatedIds = orderIds.filter(id => id !== completedOrderId);
+      saveStoredOrderIds(updatedIds);
+      setOrderIds(updatedIds);
+      
+      // Clear timer if exists
+      if (timerRefs.current.has(`food-${completedOrderId}`)) {
+        clearInterval(timerRefs.current.get(`food-${completedOrderId}`));
+        timerRefs.current.delete(`food-${completedOrderId}`);
+      }
+    }
+    
+    setShowCompletionModal(false);
+    setCompletedService("");
+    setCompletedOrderId("");
+  };
+
   // ✅ Live listeners for requests with progress tracking
   useEffect(() => {
-    console.log("Setting up request listeners for IDs:", requestIds);
-    
     const existing = unsubRef.current;
 
     // cleanup removed listeners
@@ -469,14 +575,11 @@ export default function Dashboard() {
       if (existing.has(id)) return;
 
       const ref = doc(db, "serviceRequests", id);
-      
-      console.log("Setting up listener for request:", id);
 
       const unsub = onSnapshot(
         ref,
         (snap) => {
           if (!snap.exists()) {
-            console.log("Request deleted:", id);
             setRequestsMap((prev) => {
               const copy = { ...prev };
               copy[id] = { id, status: "deleted" };
@@ -485,21 +588,11 @@ export default function Dashboard() {
             return;
           }
           const data = snap.data();
-          console.log("Request data received:", {
-            id,
-            status: data.status,
-            type: data.type,
-            estimatedTime: data.estimatedTime,
-            acceptedAt: data.acceptedAt,
-            hasAcceptedAt: !!data.acceptedAt,
-            acceptedAtType: typeof data.acceptedAt
-          });
           
           const progressData = calculateProgress(data);
           const updatedData = { 
             id, 
             ...data,
-            // Ensure progress properties are included
             percentage: progressData.percentage,
             remainingMs: progressData.remainingMs
           };
@@ -519,7 +612,6 @@ export default function Dashboard() {
               clearInterval(timerRefs.current.get(id));
             }
             
-            console.log("Starting progress timer for:", id);
             const intervalId = setInterval(() => {
               setRequestsMap(prev => {
                 if (!prev[id]) return prev;
@@ -533,7 +625,7 @@ export default function Dashboard() {
                   }
                 };
               });
-            }, 1000); // Update every second
+            }, 1000);
             
             timerRefs.current.set(id, intervalId);
           }
@@ -541,13 +633,11 @@ export default function Dashboard() {
           // Stop timer if request is completed or deleted
           if ((data.status === "completed" || data.status === "deleted") && 
               timerRefs.current.has(id)) {
-            console.log("Stopping timer for:", id);
             clearInterval(timerRefs.current.get(id));
             timerRefs.current.delete(id);
           }
         },
         (err) => {
-          console.error("Request snapshot error:", err);
           setRequestsMap((prev) => ({
             ...prev,
             [id]: { id, status: "restricted" },
@@ -565,16 +655,128 @@ export default function Dashboard() {
         } catch {}
       }
       existing.clear();
-      
-      // Clear all timers
-      timerRefs.current.forEach((intervalId) => clearInterval(intervalId));
-      timerRefs.current.clear();
     };
   }, [requestIds]);
 
+  // ✅ Live listener for food orders
+  useEffect(() => {
+    if (!adminId || !safeMobile || !roomNumberForQuery) return;
+
+    // Create query for this guest's food orders
+    const ordersQuery = query(
+      collection(db, "users", adminId, "foodOrders"),
+      where("guestMobile", "==", safeMobile),
+      where("roomNumber", "==", roomNumberForQuery)
+    );
+
+    // Clean up previous listener
+    if (foodOrderUnsubRef.current) {
+      foodOrderUnsubRef.current();
+    }
+
+    const unsubscribe = onSnapshot(
+      ordersQuery,
+      (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          const order = { id: change.doc.id, ...change.doc.data() };
+          
+          if (change.type === "added" || change.type === "modified") {
+            // Add to storage if this is a new order
+            if (change.type === "added") {
+              addOrderIdToStorage(order.id);
+            }
+            
+            // Calculate progress
+            const progressData = calculateFoodProgress(order);
+            const updatedOrder = {
+              ...order,
+              percentage: progressData.percentage,
+              remainingMs: progressData.remainingMs
+            };
+            
+            // Update orders map
+            setOrdersMap(prev => ({
+              ...prev,
+              [order.id]: updatedOrder
+            }));
+            
+            // Check for completion notification
+            checkFoodOrderNotifications(order);
+            
+            // Start progress timer for accepted orders with estimated time
+            if (order.status === "accepted" && order.estimatedTime && order.acceptedAt) {
+              // Clear existing timer if any
+              if (timerRefs.current.has(`food-${order.id}`)) {
+                clearInterval(timerRefs.current.get(`food-${order.id}`));
+              }
+              
+              const intervalId = setInterval(() => {
+                setOrdersMap(prev => {
+                  if (!prev[order.id]) return prev;
+                  const progress = calculateFoodProgress(prev[order.id]);
+                  return {
+                    ...prev,
+                    [order.id]: {
+                      ...prev[order.id],
+                      percentage: progress.percentage,
+                      remainingMs: progress.remainingMs
+                    }
+                  };
+                });
+              }, 1000);
+              
+              timerRefs.current.set(`food-${order.id}`, intervalId);
+            }
+            
+            // Stop timer if order is completed or cancelled
+            if ((order.status === "completed" || order.status === "cancelled") && 
+                timerRefs.current.has(`food-${order.id}`)) {
+              clearInterval(timerRefs.current.get(`food-${order.id}`));
+              timerRefs.current.delete(`food-${order.id}`);
+            }
+          }
+          
+          if (change.type === "removed") {
+            // Remove from local state
+            setOrdersMap(prev => {
+              const copy = { ...prev };
+              delete copy[order.id];
+              return copy;
+            });
+            
+            // Clear timer if exists
+            if (timerRefs.current.has(`food-${order.id}`)) {
+              clearInterval(timerRefs.current.get(`food-${order.id}`));
+              timerRefs.current.delete(`food-${order.id}`);
+            }
+          }
+        });
+      },
+      (error) => {
+        console.error("Food orders listener error:", error);
+      }
+    );
+
+    foodOrderUnsubRef.current = unsubscribe;
+
+    return () => {
+      if (foodOrderUnsubRef.current) {
+        foodOrderUnsubRef.current();
+      }
+      
+      // Clear food order timers
+      timerRefs.current.forEach((intervalId, key) => {
+        if (key.startsWith('food-')) {
+          clearInterval(intervalId);
+          timerRefs.current.delete(key);
+        }
+      });
+    };
+  }, [adminId, safeMobile, roomNumberForQuery]);
+
   // ✅ Check for arrival notifications periodically
   useEffect(() => {
-    const interval = setInterval(checkArrivalNotifications, 30000); // Check every 30 seconds
+    const interval = setInterval(checkArrivalNotifications, 30000);
     return () => clearInterval(interval);
   }, [requestsMap]);
 
@@ -735,11 +937,24 @@ export default function Dashboard() {
     return arr;
   }, [requestIds, requestsMap]);
 
+  const ordersList = useMemo(() => {
+    const arr = orderIds
+      .map((id) => ordersMap[id] || { id, status: "loading" })
+      .map((o) => ({
+        ...o,
+        createdMs: o?.createdAt?.toMillis?.() ?? 0,
+      }))
+      .sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
+
+    return arr;
+  }, [orderIds, ordersMap]);
+
   const statusChip = (status) => {
     const s = (status || "pending").toLowerCase();
     if (s === "accepted") return { bg: "rgba(37,99,235,0.12)", text: "#2563EB", label: "ACCEPTED" };
     if (s === "completed") return { bg: "rgba(22,163,74,0.12)", text: "#16A34A", label: "COMPLETED" };
     if (s === "in-progress") return { bg: "rgba(37,99,235,0.12)", text: "#2563EB", label: "IN PROGRESS" };
+    if (s === "cancelled") return { bg: "rgba(107,114,128,0.12)", text: "#6B7280", label: "CANCELLED" };
     if (s === "restricted") return { bg: "rgba(220,38,38,0.10)", text: "#DC2626", label: "NO ACCESS" };
     if (s === "deleted") return { bg: "rgba(107,114,128,0.12)", text: "#6B7280", label: "REMOVED" };
     if (s === "loading") return { bg: "rgba(107,114,128,0.12)", text: "#6B7280", label: "LOADING" };
@@ -780,6 +995,28 @@ export default function Dashboard() {
                 className="tapButton"
               >
                 Got it, thanks!
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ✅ COMPLETION NOTIFICATION MODAL */}
+      {showCompletionModal && (
+        <div style={styles.completionOverlay}>
+          <div style={styles.completionModal}>
+            <div style={styles.completionIcon}>✅</div>
+            <div style={styles.completionTitle}>Order Completed!</div>
+            <div style={styles.completionMessage}>
+              Your {completedService} has been delivered!
+            </div>
+            <div style={styles.completionActions}>
+              <button
+                onClick={handleCompletionConfirm}
+                style={styles.completionConfirmBtn}
+                className="tapButton"
+              >
+                Great! Enjoy your meal
               </button>
             </div>
           </div>
@@ -895,6 +1132,19 @@ export default function Dashboard() {
               <span style={styles.tabBadge}>{requestIds.length}</span>
             ) : null}
           </button>
+          <button
+            className="tapButton"
+            onClick={() => setActiveTab("food")}
+            style={{
+              ...styles.tabBtn,
+              ...(activeTab === "food" ? styles.tabBtnActive : null),
+            }}
+          >
+            Food Orders
+            {orderIds.length ? (
+              <span style={styles.tabBadge}>{orderIds.length}</span>
+            ) : null}
+          </button>
         </div>
 
         {activeTab === "services" ? (
@@ -938,7 +1188,7 @@ export default function Dashboard() {
                     <path d="M9 6h6M9 10h6M9 14h6" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
                   </svg>
                 </div>
-                <div style={styles.sectionTitle}>Request Tracker</div>
+                <div style={styles.sectionTitle}>Service Requests</div>
               </div>
               <button
                 className="tapButton"
@@ -965,16 +1215,6 @@ export default function Dashboard() {
                   const isInProgress = r.status === "in-progress";
                   const hasEstimatedTime = isInProgress && r.estimatedTime;
                   const hasProgress = hasEstimatedTime && r.percentage !== undefined;
-                  
-                  console.log("Rendering request:", {
-                    id: r.id,
-                    status: r.status,
-                    type: r.type,
-                    estimatedTime: r.estimatedTime,
-                    percentage: r.percentage,
-                    hasProgress: hasProgress,
-                    hasEstimatedTime: hasEstimatedTime
-                  });
                   
                   return (
                     <div key={r.id} style={styles.reqCard}>
@@ -1017,23 +1257,117 @@ export default function Dashboard() {
                         </div>
                       )}
                       
-                      {/* ✅ SHOW ESTIMATED TIME IF PENDING ACCEPTANCE */}
-                      {hasEstimatedTime && !hasProgress && (
+                      <div style={styles.reqIdRow}>
+                        <div style={styles.reqIdLabel}>ID</div>
+                        <div style={styles.reqIdValue}>{r.id}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        ) : null}
+
+        {activeTab === "food" ? (
+          <>
+            <div style={styles.sectionHeader}>
+              <div style={styles.sectionLeft}>
+                <div style={styles.sectionIcon}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </div>
+                <div style={styles.sectionTitle}>Food Orders</div>
+              </div>
+              <button
+                className="tapButton"
+                onClick={clearFoodOrderHistory}
+                style={styles.clearBtn}
+                disabled={!orderIds.length}
+                title="Clear food order history"
+              >
+                Clear
+              </button>
+            </div>
+
+            {orderIds.length === 0 ? (
+              <div style={styles.emptyBox}>
+                <div style={styles.emptyTitle}>No food orders yet</div>
+                <div style={styles.emptySub}>
+                  Order food from the menu and track it here in real-time.
+                </div>
+              </div>
+            ) : (
+              <div style={styles.reqList}>
+                {ordersList.map((o) => {
+                  const chip = statusChip(o.status);
+                  const isAccepted = o.status === "accepted";
+                  const hasEstimatedTime = isAccepted && o.estimatedTime;
+                  const hasProgress = hasEstimatedTime && o.percentage !== undefined;
+                  const isCompleted = o.status === "completed";
+                  
+                  return (
+                    <div key={o.id} style={styles.reqCard}>
+                      <div style={styles.reqTop}>
+                        <div style={styles.reqType}>
+                          {o.item || "Food Order"}
+                          {o.mealCategory && ` (${o.mealCategory})`}
+                        </div>
+                        <div style={{ ...styles.reqStatus, backgroundColor: chip.bg, color: chip.text }}>
+                          {chip.label}
+                        </div>
+                      </div>
+                      
+                      {o.notes && (
+                        <div style={styles.reqNotes}>
+                          <strong>Notes:</strong> {o.notes}
+                        </div>
+                      )}
+                      
+                      <div style={styles.reqMeta}>
+                        Room {o.roomNumber ?? safeRoomNumber} • ₹{o.totalPrice || 0} • {formatTime(o.createdAt)}
+                      </div>
+                      
+                      {/* ✅ PROGRESS BAR FOR ACCEPTED FOOD ORDERS */}
+                      {hasProgress && !isCompleted && (
                         <div style={styles.progressSection}>
                           <div style={styles.progressHeader}>
                             <span style={styles.progressLabel}>
-                              Estimated arrival time
+                              Ready in {formatTimeForProgress(o.remainingMs || 0)}
+                            </span>
+                            <span style={styles.progressPercentage}>
+                              {Math.round(o.percentage || 0)}%
                             </span>
                           </div>
+                          <div style={styles.progressBar}>
+                            <div 
+                              style={{
+                                ...styles.progressFill,
+                                width: `${o.percentage || 0}%`,
+                                backgroundColor: "#16A34A"
+                              }}
+                            />
+                          </div>
                           <div style={styles.progressSubtext}>
-                            Estimated time: {r.estimatedTime} minutes
+                            Estimated time: {o.estimatedTime} minutes
+                            {o.remainingMs > 0 && ` • ${formatTimeForProgress(o.remainingMs)} remaining`}
                           </div>
                         </div>
                       )}
                       
+                      {/* ✅ COMPLETED MESSAGE */}
+                      {isCompleted && (
+                        <div style={styles.completedMessage}>
+                          <span style={styles.completedIcon}>✅</span>
+                          <span style={styles.completedText}>Order delivered and completed!</span>
+                        </div>
+                      )}
+                      
                       <div style={styles.reqIdRow}>
-                        <div style={styles.reqIdLabel}>ID</div>
-                        <div style={styles.reqIdValue}>{r.id}</div>
+                        <div style={styles.reqIdLabel}>Order ID</div>
+                        <div style={styles.reqIdValue}>{o.id}</div>
                       </div>
                     </div>
                   );
@@ -1113,8 +1447,135 @@ function GlobalStyles() {
   );
 }
 
-// ✅ Add expired session styles
 const styles = {
+  // ✅ Tab Row Styles (updated for 3 tabs)
+  tabRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 10,
+    marginBottom: 12,
+  },
+  tabBtn: {
+    height: 44,
+    borderRadius: 14,
+    border: "1px solid #E5E7EB",
+    backgroundColor: "#fff",
+    fontWeight: 900,
+    color: "#6B7280",
+    cursor: "pointer",
+    boxShadow: "0 2px 10px rgba(17, 24, 39, 0.05)",
+    fontSize: 12,
+  },
+  tabBtnActive: {
+    backgroundColor: "#2563EB",
+    borderColor: "#2563EB",
+    color: "#fff",
+  },
+  tabBadge: {
+    marginLeft: 8,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 18,
+    height: 18,
+    padding: "0 6px",
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.25)",
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: 900,
+  },
+  
+  // ✅ Completion Notification Styles
+  completionOverlay: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 9999,
+    padding: 20,
+  },
+  completionModal: {
+    backgroundColor: "#fff",
+    borderRadius: 24,
+    padding: 30,
+    maxWidth: 400,
+    width: "100%",
+    textAlign: "center",
+    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.3)",
+    border: "2px solid #16A34A",
+  },
+  completionIcon: {
+    fontSize: 60,
+    marginBottom: 20,
+    animation: "pulse 1.5s infinite",
+  },
+  completionTitle: {
+    fontSize: 24,
+    fontWeight: 900,
+    color: "#111827",
+    marginBottom: 12,
+  },
+  completionMessage: {
+    fontSize: 16,
+    color: "#6B7280",
+    marginBottom: 24,
+    lineHeight: 1.5,
+  },
+  completionActions: {
+    display: "flex",
+    gap: 12,
+  },
+  completionConfirmBtn: {
+    flex: 1,
+    backgroundColor: "#16A34A",
+    color: "#fff",
+    border: "none",
+    padding: "16px 24px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    transition: "all 0.2s ease",
+  },
+  
+  // ✅ Completed Message Styles
+  completedMessage: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(22, 163, 74, 0.12)",
+    border: "1px solid rgba(22, 163, 74, 0.25)",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  completedIcon: {
+    fontSize: 16,
+    color: "#16A34A",
+  },
+  completedText: {
+    color: "#16A34A",
+    fontWeight: 800,
+    fontSize: 13,
+  },
+  
+  // ✅ Notes Styles
+  reqNotes: {
+    marginTop: 8,
+    padding: 10,
+    backgroundColor: "#F9FAFB",
+    borderRadius: 8,
+    fontSize: 13,
+    color: "#6B7280",
+    borderLeft: "3px solid #F59E0B",
+  },
+  
   // ✅ Arrival Notification Styles
   arrivalOverlay: {
     position: "fixed",
@@ -1301,16 +1762,10 @@ const styles = {
   statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#16A34A" },
   statusText: { fontSize: 12, fontWeight: 900, color: "#16A34A" },
   toast: { marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: "rgba(22, 163, 74, 0.12)", border: "1px solid rgba(22, 163, 74, 0.25)", color: "#16A34A", fontWeight: 900, fontSize: 13, textAlign: "center" },
-  tabRow: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 },
-  tabBtn: { height: 44, borderRadius: 14, border: "1px solid #E5E7EB", backgroundColor: "#fff", fontWeight: 900, color: "#6B7280", cursor: "pointer", boxShadow: "0 2px 10px rgba(17, 24, 39, 0.05)" },
-  tabBtnActive: { backgroundColor: "#2563EB", borderColor: "#2563EB", color: "#fff" },
-  tabBadge: { marginLeft: 8, display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 18, height: 18, padding: "0 6px", borderRadius: 999, backgroundColor: "rgba(255,255,255,0.25)", color: "#fff", fontSize: 12, fontWeight: 900 },
   sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 10, marginBottom: 10, flexWrap: "wrap" },
   sectionLeft: { display: "flex", alignItems: "center", gap: 10 },
   sectionIcon: { width: 30, height: 30, borderRadius: 10, backgroundColor: "#2563EB", display: "flex", alignItems: "center", justifyContent: "center" },
   sectionTitle: { fontSize: 16, fontWeight: 900, color: "#111827" },
-  sectionBadge: { backgroundColor: "#fff", border: "1px solid #E5E7EB", padding: "6px 10px", borderRadius: 12, boxShadow: "0 2px 10px rgba(17, 24, 39, 0.05)" },
-  sectionBadgeText: { color: "#2563EB", fontWeight: 900, fontSize: 12 },
   clearBtn: { height: 36, padding: "0 12px", borderRadius: 12, border: "1px solid #E5E7EB", backgroundColor: "#fff", color: "#6B7280", fontWeight: 900, cursor: "pointer" },
   grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
   serviceCard: { width: "100%", textAlign: "left", padding: 14, borderRadius: 16, border: "1px solid #E5E7EB", backgroundColor: "#fff", boxShadow: "0 6px 18px rgba(17, 24, 39, 0.06)", cursor: "pointer", display: "flex", gap: 12, alignItems: "center", borderLeftWidth: 4, borderLeftStyle: "solid", minWidth: 0 },
