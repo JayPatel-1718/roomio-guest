@@ -61,11 +61,10 @@ export default function Dashboard() {
   const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
   const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
   
-  // ✅ Food order tracking state
-  const [orderIds, setOrderIds] = useState([]);
-  const [ordersMap, setOrdersMap] = useState({});
-  const [orderStatuses, setOrderStatuses] = useState({}); // Track completion notifications
-  const foodOrderUnsubRef = useRef(null);
+  // ✅ Food order tracking state - NOW TRACKING serviceRequests NOT foodOrders
+  const [foodRequestIds, setFoodRequestIds] = useState([]);
+  const [foodRequestsMap, setFoodRequestsMap] = useState({});
+  const foodRequestUnsubRef = useRef(null);
   
   // ✅ Timer refs for progress bars
   const timerRefs = useRef(new Map()); // Map<id, intervalId>
@@ -105,11 +104,11 @@ export default function Dashboard() {
     return `roomio:requests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
 
-  const foodOrdersStorageKey = useMemo(() => {
+  const foodRequestsStorageKey = useMemo(() => {
     if (!adminId) return null;
     if (!safeMobile || safeMobile === "—") return null;
     if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
-    return `roomio:foodOrders:${adminId}:${safeMobile}:${roomNumberForQuery}`;
+    return `roomio:foodRequests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
 
   const laundryCooldownKey = useMemo(() => {
@@ -224,16 +223,16 @@ export default function Dashboard() {
   const addRequestIdToStorage = (id) => {
     if (!storageKey) return;
     const current = loadStoredRequestIds();
-    const next = [id, ...current.filter((x) => x !== id)].slice(0, 30); // keep max 30
+    const next = [id, ...current.filter((x) => x !== id)].slice(0, 30);
     saveStoredRequestIds(next);
     setRequestIds(next);
   };
 
-  // Load stored food order IDs
-  const loadStoredOrderIds = () => {
-    if (!foodOrdersStorageKey) return [];
+  // Load stored food request IDs (from serviceRequests)
+  const loadStoredFoodRequestIds = () => {
+    if (!foodRequestsStorageKey) return [];
     try {
-      const raw = localStorage.getItem(foodOrdersStorageKey);
+      const raw = localStorage.getItem(foodRequestsStorageKey);
       const arr = raw ? JSON.parse(raw) : [];
       return Array.isArray(arr) ? arr : [];
     } catch {
@@ -241,19 +240,19 @@ export default function Dashboard() {
     }
   };
 
-  const saveStoredOrderIds = (ids) => {
-    if (!foodOrdersStorageKey) return;
+  const saveStoredFoodRequestIds = (ids) => {
+    if (!foodRequestsStorageKey) return;
     try {
-      localStorage.setItem(foodOrdersStorageKey, JSON.stringify(ids));
+      localStorage.setItem(foodRequestsStorageKey, JSON.stringify(ids));
     } catch {}
   };
 
-  const addOrderIdToStorage = (id) => {
-    if (!foodOrdersStorageKey) return;
-    const current = loadStoredOrderIds();
+  const addFoodRequestIdToStorage = (id) => {
+    if (!foodRequestsStorageKey) return;
+    const current = loadStoredFoodRequestIds();
     const next = [id, ...current.filter((x) => x !== id)].slice(0, 30);
-    saveStoredOrderIds(next);
-    setOrderIds(next);
+    saveStoredFoodRequestIds(next);
+    setFoodRequestIds(next);
   };
 
   const clearRequestHistory = () => {
@@ -268,14 +267,13 @@ export default function Dashboard() {
     timerRefs.current.clear();
   };
 
-  const clearFoodOrderHistory = () => {
-    if (!foodOrdersStorageKey) return;
+  const clearFoodRequestHistory = () => {
+    if (!foodRequestsStorageKey) return;
     try {
-      localStorage.removeItem(foodOrdersStorageKey);
+      localStorage.removeItem(foodRequestsStorageKey);
     } catch {}
-    setOrderIds([]);
-    setOrdersMap({});
-    setOrderStatuses({});
+    setFoodRequestIds([]);
+    setFoodRequestsMap({});
   };
 
   // ✅ Booking query to validate session
@@ -315,9 +313,9 @@ export default function Dashboard() {
     const ids = loadStoredRequestIds();
     setRequestIds(ids);
     
-    const orderIds = loadStoredOrderIds();
-    setOrderIds(orderIds);
-  }, [state, storageKey, foodOrdersStorageKey]);
+    const foodIds = loadStoredFoodRequestIds();
+    setFoodRequestIds(foodIds);
+  }, [state, storageKey, foodRequestsStorageKey]);
 
   // ✅ Laundry cooldown timer
   useEffect(() => {
@@ -417,50 +415,6 @@ export default function Dashboard() {
     return { percentage, remainingMs };
   };
 
-  // ✅ Calculate food order progress
-  const calculateFoodProgress = (order) => {
-    if (!order.estimatedTime) {
-      return { percentage: 0, remainingMs: order.estimatedTime ? order.estimatedTime * 60 * 1000 : 0 };
-    }
-    
-    if (!order.acceptedAt) {
-      return { percentage: 0, remainingMs: order.estimatedTime * 60 * 1000 };
-    }
-    
-    let acceptedTime;
-    
-    // Check if acceptedAt is a Firestore Timestamp
-    if (order.acceptedAt.toMillis) {
-      acceptedTime = order.acceptedAt.toMillis();
-    } 
-    // Check if it's a string timestamp
-    else if (typeof order.acceptedAt === 'string') {
-      acceptedTime = new Date(order.acceptedAt).getTime();
-    }
-    // Check if it's a number
-    else if (typeof order.acceptedAt === 'number') {
-      acceptedTime = order.acceptedAt;
-    }
-    // Fallback to current time
-    else {
-      acceptedTime = Date.now();
-    }
-    
-    const estimatedMs = order.estimatedTime * 60 * 1000;
-    const endTime = acceptedTime + estimatedMs;
-    const now = Date.now();
-    
-    if (now >= endTime) {
-      return { percentage: 100, remainingMs: 0 };
-    }
-    
-    const elapsed = now - acceptedTime;
-    const percentage = Math.min(100, (elapsed / estimatedMs) * 100);
-    const remainingMs = Math.max(0, endTime - now);
-    
-    return { percentage, remainingMs };
-  };
-
   // ✅ Check for arrival notifications
   const checkArrivalNotifications = () => {
     const now = Date.now();
@@ -491,16 +445,16 @@ export default function Dashboard() {
   };
 
   // ✅ Check for food order completion notifications
-  const checkFoodOrderNotifications = (order) => {
-    if (order.status === "completed" && !orderStatuses[order.id]?.notified) {
-      setCompletedService(order.item || "Food Order");
-      setCompletedOrderId(order.id);
+  const checkFoodOrderNotifications = (request) => {
+    if (request.status === "completed" && !request.completionNotified) {
+      setCompletedService(request.dishName || "Food Order");
+      setCompletedOrderId(request.id);
       setShowCompletionModal(true);
       
       // Mark as notified
-      setOrderStatuses(prev => ({
+      setFoodRequestsMap(prev => ({
         ...prev,
-        [order.id]: { ...prev[order.id], notified: true }
+        [request.id]: { ...prev[request.id], completionNotified: true }
       }));
     }
   };
@@ -539,10 +493,10 @@ export default function Dashboard() {
   // ✅ Handle completion notification confirmation
   const handleCompletionConfirm = () => {
     if (completedOrderId) {
-      // Remove the order from local storage
-      const updatedIds = orderIds.filter(id => id !== completedOrderId);
-      saveStoredOrderIds(updatedIds);
-      setOrderIds(updatedIds);
+      // Remove the request from local storage
+      const updatedIds = foodRequestIds.filter(id => id !== completedOrderId);
+      saveStoredFoodRequestIds(updatedIds);
+      setFoodRequestIds(updatedIds);
       
       // Clear timer if exists
       if (timerRefs.current.has(`food-${completedOrderId}`)) {
@@ -556,7 +510,7 @@ export default function Dashboard() {
     setCompletedOrderId("");
   };
 
-  // ✅ Live listeners for requests with progress tracking
+  // ✅ Live listeners for service requests (laundry/housekeeping)
   useEffect(() => {
     const existing = unsubRef.current;
 
@@ -588,6 +542,9 @@ export default function Dashboard() {
             return;
           }
           const data = snap.data();
+          
+          // Skip food orders in this listener
+          if (data.type === "Food Order") return;
           
           const progressData = calculateProgress(data);
           const updatedData = { 
@@ -658,66 +615,68 @@ export default function Dashboard() {
     };
   }, [requestIds]);
 
-  // ✅ Live listener for food orders
+  // ✅ Live listener for FOOD service requests (from admin's Tracking.tsx)
   useEffect(() => {
     if (!adminId || !safeMobile || !roomNumberForQuery) return;
 
-    // Create query for this guest's food orders
-    const ordersQuery = query(
-      collection(db, "users", adminId, "foodOrders"),
+    // Listen for service requests that are food orders
+    const foodRequestsQuery = query(
+      collection(db, "serviceRequests"),
+      where("adminId", "==", adminId),
       where("guestMobile", "==", safeMobile),
-      where("roomNumber", "==", roomNumberForQuery)
+      where("roomNumber", "==", roomNumberForQuery),
+      where("type", "==", "Food Order")
     );
 
     // Clean up previous listener
-    if (foodOrderUnsubRef.current) {
-      foodOrderUnsubRef.current();
+    if (foodRequestUnsubRef.current) {
+      foodRequestUnsubRef.current();
     }
 
     const unsubscribe = onSnapshot(
-      ordersQuery,
+      foodRequestsQuery,
       (snapshot) => {
         snapshot.docChanges().forEach((change) => {
-          const order = { id: change.doc.id, ...change.doc.data() };
+          const request = { id: change.doc.id, ...change.doc.data() };
           
           if (change.type === "added" || change.type === "modified") {
-            // Add to storage if this is a new order
+            // Add to storage if this is a new request
             if (change.type === "added") {
-              addOrderIdToStorage(order.id);
+              addFoodRequestIdToStorage(request.id);
             }
             
             // Calculate progress
-            const progressData = calculateFoodProgress(order);
-            const updatedOrder = {
-              ...order,
+            const progressData = calculateProgress(request);
+            const updatedRequest = {
+              ...request,
               percentage: progressData.percentage,
               remainingMs: progressData.remainingMs
             };
             
-            // Update orders map
-            setOrdersMap(prev => ({
+            // Update food requests map
+            setFoodRequestsMap(prev => ({
               ...prev,
-              [order.id]: updatedOrder
+              [request.id]: updatedRequest
             }));
             
             // Check for completion notification
-            checkFoodOrderNotifications(order);
+            checkFoodOrderNotifications(request);
             
-            // Start progress timer for accepted orders with estimated time
-            if (order.status === "accepted" && order.estimatedTime && order.acceptedAt) {
+            // Start progress timer for in-progress requests with estimated time
+            if (request.status === "in-progress" && request.estimatedTime && request.acceptedAt) {
               // Clear existing timer if any
-              if (timerRefs.current.has(`food-${order.id}`)) {
-                clearInterval(timerRefs.current.get(`food-${order.id}`));
+              if (timerRefs.current.has(`food-${request.id}`)) {
+                clearInterval(timerRefs.current.get(`food-${request.id}`));
               }
               
               const intervalId = setInterval(() => {
-                setOrdersMap(prev => {
-                  if (!prev[order.id]) return prev;
-                  const progress = calculateFoodProgress(prev[order.id]);
+                setFoodRequestsMap(prev => {
+                  if (!prev[request.id]) return prev;
+                  const progress = calculateProgress(prev[request.id]);
                   return {
                     ...prev,
-                    [order.id]: {
-                      ...prev[order.id],
+                    [request.id]: {
+                      ...prev[request.id],
                       percentage: progress.percentage,
                       remainingMs: progress.remainingMs
                     }
@@ -725,46 +684,46 @@ export default function Dashboard() {
                 });
               }, 1000);
               
-              timerRefs.current.set(`food-${order.id}`, intervalId);
+              timerRefs.current.set(`food-${request.id}`, intervalId);
             }
             
-            // Stop timer if order is completed or cancelled
-            if ((order.status === "completed" || order.status === "cancelled") && 
-                timerRefs.current.has(`food-${order.id}`)) {
-              clearInterval(timerRefs.current.get(`food-${order.id}`));
-              timerRefs.current.delete(`food-${order.id}`);
+            // Stop timer if request is completed or cancelled
+            if ((request.status === "completed" || request.status === "cancelled") && 
+                timerRefs.current.has(`food-${request.id}`)) {
+              clearInterval(timerRefs.current.get(`food-${request.id}`));
+              timerRefs.current.delete(`food-${request.id}`);
             }
           }
           
           if (change.type === "removed") {
             // Remove from local state
-            setOrdersMap(prev => {
+            setFoodRequestsMap(prev => {
               const copy = { ...prev };
-              delete copy[order.id];
+              delete copy[request.id];
               return copy;
             });
             
             // Clear timer if exists
-            if (timerRefs.current.has(`food-${order.id}`)) {
-              clearInterval(timerRefs.current.get(`food-${order.id}`));
-              timerRefs.current.delete(`food-${order.id}`);
+            if (timerRefs.current.has(`food-${request.id}`)) {
+              clearInterval(timerRefs.current.get(`food-${request.id}`));
+              timerRefs.current.delete(`food-${request.id}`);
             }
           }
         });
       },
       (error) => {
-        console.error("Food orders listener error:", error);
+        console.error("Food service requests listener error:", error);
       }
     );
 
-    foodOrderUnsubRef.current = unsubscribe;
+    foodRequestUnsubRef.current = unsubscribe;
 
     return () => {
-      if (foodOrderUnsubRef.current) {
-        foodOrderUnsubRef.current();
+      if (foodRequestUnsubRef.current) {
+        foodRequestUnsubRef.current();
       }
       
-      // Clear food order timers
+      // Clear food request timers
       timerRefs.current.forEach((intervalId, key) => {
         if (key.startsWith('food-')) {
           clearInterval(intervalId);
@@ -937,17 +896,17 @@ export default function Dashboard() {
     return arr;
   }, [requestIds, requestsMap]);
 
-  const ordersList = useMemo(() => {
-    const arr = orderIds
-      .map((id) => ordersMap[id] || { id, status: "loading" })
-      .map((o) => ({
-        ...o,
-        createdMs: o?.createdAt?.toMillis?.() ?? 0,
+  const foodRequestsList = useMemo(() => {
+    const arr = foodRequestIds
+      .map((id) => foodRequestsMap[id] || { id, status: "loading" })
+      .map((r) => ({
+        ...r,
+        createdMs: r?.createdAt?.toMillis?.() ?? 0,
       }))
       .sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
 
     return arr;
-  }, [orderIds, ordersMap]);
+  }, [foodRequestIds, foodRequestsMap]);
 
   const statusChip = (status) => {
     const s = (status || "pending").toLowerCase();
@@ -1141,8 +1100,8 @@ export default function Dashboard() {
             }}
           >
             Food Orders
-            {orderIds.length ? (
-              <span style={styles.tabBadge}>{orderIds.length}</span>
+            {foodRequestIds.length ? (
+              <span style={styles.tabBadge}>{foodRequestIds.length}</span>
             ) : null}
           </button>
         </div>
@@ -1283,16 +1242,16 @@ export default function Dashboard() {
               </div>
               <button
                 className="tapButton"
-                onClick={clearFoodOrderHistory}
+                onClick={clearFoodRequestHistory}
                 style={styles.clearBtn}
-                disabled={!orderIds.length}
+                disabled={!foodRequestIds.length}
                 title="Clear food order history"
               >
                 Clear
               </button>
             </div>
 
-            {orderIds.length === 0 ? (
+            {foodRequestIds.length === 0 ? (
               <div style={styles.emptyBox}>
                 <div style={styles.emptyTitle}>No food orders yet</div>
                 <div style={styles.emptySub}>
@@ -1301,59 +1260,68 @@ export default function Dashboard() {
               </div>
             ) : (
               <div style={styles.reqList}>
-                {ordersList.map((o) => {
-                  const chip = statusChip(o.status);
-                  const isAccepted = o.status === "accepted";
-                  const hasEstimatedTime = isAccepted && o.estimatedTime;
-                  const hasProgress = hasEstimatedTime && o.percentage !== undefined;
-                  const isCompleted = o.status === "completed";
+                {foodRequestsList.map((r) => {
+                  const chip = statusChip(r.status);
+                  const isInProgress = r.status === "in-progress";
+                  const isPending = (r.status || "pending") === "pending";
+                  const isCompleted = r.status === "completed";
+                  const hasEstimatedTime = isInProgress && r.estimatedTime;
+                  const hasProgress = hasEstimatedTime && r.percentage !== undefined;
                   
                   return (
-                    <div key={o.id} style={styles.reqCard}>
+                    <div key={r.id} style={styles.reqCard}>
                       <div style={styles.reqTop}>
                         <div style={styles.reqType}>
-                          {o.item || "Food Order"}
-                          {o.mealCategory && ` (${o.mealCategory})`}
+                          {r.dishName || "Food Order"}
+                          {r.mealCategory && ` (${r.mealCategory})`}
                         </div>
                         <div style={{ ...styles.reqStatus, backgroundColor: chip.bg, color: chip.text }}>
                           {chip.label}
                         </div>
                       </div>
                       
-                      {o.notes && (
+                      {r.notes && (
                         <div style={styles.reqNotes}>
-                          <strong>Notes:</strong> {o.notes}
+                          <strong>Notes:</strong> {r.notes}
                         </div>
                       )}
                       
                       <div style={styles.reqMeta}>
-                        Room {o.roomNumber ?? safeRoomNumber} • ₹{o.totalPrice || 0} • {formatTime(o.createdAt)}
+                        Room {r.roomNumber ?? safeRoomNumber} • {formatTime(r.createdAt)}
                       </div>
                       
-                      {/* ✅ PROGRESS BAR FOR ACCEPTED FOOD ORDERS */}
+                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS FOOD ORDERS (NO BAR FOR PENDING) */}
                       {hasProgress && !isCompleted && (
                         <div style={styles.progressSection}>
                           <div style={styles.progressHeader}>
                             <span style={styles.progressLabel}>
-                              Ready in {formatTimeForProgress(o.remainingMs || 0)}
+                              Ready in {formatTimeForProgress(r.remainingMs || 0)}
                             </span>
                             <span style={styles.progressPercentage}>
-                              {Math.round(o.percentage || 0)}%
+                              {Math.round(r.percentage || 0)}%
                             </span>
                           </div>
                           <div style={styles.progressBar}>
                             <div 
                               style={{
                                 ...styles.progressFill,
-                                width: `${o.percentage || 0}%`,
+                                width: `${r.percentage || 0}%`,
                                 backgroundColor: "#16A34A"
                               }}
                             />
                           </div>
                           <div style={styles.progressSubtext}>
-                            Estimated time: {o.estimatedTime} minutes
-                            {o.remainingMs > 0 && ` • ${formatTimeForProgress(o.remainingMs)} remaining`}
+                            Estimated time: {r.estimatedTime} minutes
+                            {r.remainingMs > 0 && ` • ${formatTimeForProgress(r.remainingMs)} remaining`}
                           </div>
+                        </div>
+                      )}
+                      
+                      {/* ✅ PENDING MESSAGE (NO PROGRESS BAR) */}
+                      {isPending && (
+                        <div style={styles.pendingMessage}>
+                          <span style={styles.pendingIcon}>⏳</span>
+                          <span style={styles.pendingText}>Your order is pending acceptance</span>
                         </div>
                       )}
                       
@@ -1367,7 +1335,7 @@ export default function Dashboard() {
                       
                       <div style={styles.reqIdRow}>
                         <div style={styles.reqIdLabel}>Order ID</div>
-                        <div style={styles.reqIdValue}>{o.id}</div>
+                        <div style={styles.reqIdValue}>{r.id}</div>
                       </div>
                     </div>
                   );
@@ -1542,6 +1510,27 @@ const styles = {
     fontWeight: 900,
     cursor: "pointer",
     transition: "all 0.2s ease",
+  },
+  
+  // ✅ Pending Message Styles
+  pendingMessage: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
+    border: "1px solid rgba(245, 158, 11, 0.25)",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  pendingIcon: {
+    fontSize: 16,
+    color: "#F59E0B",
+  },
+  pendingText: {
+    color: "#F59E0B",
+    fontWeight: 800,
+    fontSize: 13,
   },
   
   // ✅ Completed Message Styles
