@@ -9,10 +9,12 @@ import {
   onSnapshot,
   getDocs,
   doc,
+  updateDoc,
 } from "firebase/firestore";
 import { db } from "../firebase";
 
-const LAUNDRY_COOLDOWN_MS = 60 * 60 * 1000; // ✅ 1 hour
+const LAUNDRY_COOLDOWN_MS = 60 * 60 * 1000; // ✅ 1 hour for laundry
+const HOUSEKEEPING_COOLDOWN_MS = 60 * 60 * 1000; // ✅ 1 hour for housekeeping
 
 function formatRemaining(ms) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -30,6 +32,7 @@ export default function Dashboard() {
 
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   // ✅ Tabs
   const [activeTab, setActiveTab] = useState("services"); // "services" | "requests"
@@ -42,6 +45,10 @@ export default function Dashboard() {
   // ✅ Laundry cooldown state
   const [laundryBlocked, setLaundryBlocked] = useState(false);
   const [laundryRemainingMs, setLaundryRemainingMs] = useState(0);
+  
+  // ✅ Housekeeping cooldown state
+  const [housekeepingBlocked, setHousekeepingBlocked] = useState(false);
+  const [housekeepingRemainingMs, setHousekeepingRemainingMs] = useState(0);
 
   useEffect(() => {
     if (!state) navigate("/guest");
@@ -53,6 +60,7 @@ export default function Dashboard() {
   const safeAdminEmail = state?.adminEmail || "—";
   const adminId = state?.adminId || null;
   const roomNumberForQuery = state?.roomNumber ?? null;
+  const guestDocId = state?.guestDocId || null;
 
   const maskedAdmin = useMemo(() => {
     if (!safeAdminEmail || safeAdminEmail === "—") return "—";
@@ -73,6 +81,91 @@ export default function Dashboard() {
     if (!storageKey) return null;
     return `${storageKey}:laundry`;
   }, [storageKey]);
+
+  const housekeepingCooldownKey = useMemo(() => {
+    if (!storageKey) return null;
+    return `${storageKey}:housekeeping`;
+  }, [storageKey]);
+
+  // ✅ Session cleanup function
+  const cleanupSession = async () => {
+    if (!guestDocId) return;
+    
+    try {
+      await updateDoc(doc(db, "guests", guestDocId), {
+        isLoggedIn: false,
+        lastLogout: serverTimestamp()
+      });
+      console.log("Session cleaned up successfully");
+    } catch (e) {
+      console.error("Failed to cleanup session:", e);
+    }
+  };
+
+  // ✅ Handle logout
+  const handleLogout = async () => {
+    await cleanupSession();
+    
+    // Navigate back to guest login
+    navigate("/guest", { 
+      state: { 
+        admin: safeAdminEmail 
+      } 
+    });
+  };
+
+  // ✅ REAL-TIME SESSION MONITORING
+  useEffect(() => {
+    if (!guestDocId || !adminId || !safeMobile) return;
+
+    // Listen to the guest document in real-time
+    const guestDocRef = doc(db, "guests", guestDocId);
+    
+    const unsubscribe = onSnapshot(guestDocRef, (snapshot) => {
+      if (!snapshot.exists()) {
+        // Document deleted (admin checked out)
+        setSessionExpired(true);
+        alert("Your session has expired. Admin has checked you out.");
+        navigate("/guest", { replace: true });
+        return;
+      }
+
+      const guestData = snapshot.data();
+      
+      // Check if someone else logged in (isLoggedIn changed to false by another login)
+      if (!guestData.isLoggedIn) {
+        setSessionExpired(true);
+        alert("Someone else logged in with your mobile number. Your session has been terminated.");
+        navigate("/guest", { replace: true });
+        return;
+      }
+
+      // Check if admin marked as inactive
+      if (!guestData.isActive) {
+        setSessionExpired(true);
+        alert("Your booking is no longer active. Please contact reception.");
+        navigate("/guest", { replace: true });
+        return;
+      }
+    }, (error) => {
+      console.error("Session monitoring error:", error);
+    });
+
+    return () => unsubscribe();
+  }, [guestDocId, adminId, safeMobile, navigate]);
+
+  // ✅ Session management useEffect for cleanup
+  useEffect(() => {
+    const handleBeforeUnload = async (e) => {
+      await cleanupSession();
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [guestDocId]);
 
   // Load stored request IDs
   const loadStoredRequestIds = () => {
@@ -132,6 +225,8 @@ export default function Dashboard() {
 
     const unsub = onSnapshot(bookingQuery, (snap) => {
       if (snap.empty) {
+        // Also cleanup session when booking is removed
+        cleanupSession();
         navigate("/guest", { replace: true });
       }
     });
@@ -172,6 +267,33 @@ export default function Dashboard() {
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [laundryCooldownKey]);
+
+  // ✅ Housekeeping cooldown timer
+  useEffect(() => {
+    if (!housekeepingCooldownKey) return;
+
+    const tick = () => {
+      try {
+        const last = Number(localStorage.getItem(housekeepingCooldownKey) || 0);
+        const nextAllowed = last + HOUSEKEEPING_COOLDOWN_MS;
+        const now = Date.now();
+
+        if (last > 0 && now < nextAllowed) {
+          setHousekeepingBlocked(true);
+          setHousekeepingRemainingMs(nextAllowed - now);
+        } else {
+          setHousekeepingBlocked(false);
+          setHousekeepingRemainingMs(0);
+        }
+      } catch {
+        setHousekeepingBlocked(false);
+      }
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [housekeepingCooldownKey]);
 
   // ✅ Live listeners for requests
   useEffect(() => {
@@ -231,6 +353,27 @@ export default function Dashboard() {
       existing.clear();
     };
   }, [requestIds]);
+
+  // ✅ Show session expired message
+  if (sessionExpired) {
+    return (
+      <div style={styles.expiredContainer}>
+        <div style={styles.expiredCard}>
+          <div style={styles.expiredIcon}>🔒</div>
+          <div style={styles.expiredTitle}>Session Expired</div>
+          <div style={styles.expiredMessage}>
+            Someone else logged in with your mobile number.
+          </div>
+          <button
+            onClick={() => navigate("/guest", { state: { admin: safeAdminEmail } })}
+            style={styles.expiredButton}
+          >
+            Back to Login
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!state) return null;
 
@@ -298,6 +441,64 @@ export default function Dashboard() {
     }
   };
 
+  // ✅ Create Service Request (Housekeeping)
+  const requestHousekeeping = async () => {
+    if (!adminId) {
+      alert("Missing adminId. Please verify again from QR.");
+      return;
+    }
+
+    if (!bookingQuery) {
+      alert("Booking not active. Please verify again.");
+      navigate("/guest");
+      return;
+    }
+
+    if (housekeepingBlocked) {
+      showToast(`⏳ Available in ${formatRemaining(housekeepingRemainingMs)}`);
+      return;
+    }
+
+    setSending(true);
+    setToast("");
+
+    try {
+      const bookingSnap = await getDocs(bookingQuery);
+      if (bookingSnap.empty) {
+        alert("Your booking is no longer active.");
+        navigate("/guest");
+        return;
+      }
+
+      const docRef = await addDoc(collection(db, "serviceRequests"), {
+        adminId,
+        type: "Housekeeping",
+        roomNumber: safeRoomNumber,
+        guestName: safeGuestName,
+        guestMobile: safeMobile,
+        status: "pending",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        source: "guest-web",
+      });
+
+      addRequestIdToStorage(docRef.id);
+      
+      // Start cooldown
+      if (housekeepingCooldownKey) {
+        localStorage.setItem(housekeepingCooldownKey, String(Date.now()));
+      }
+
+      showToast("✅ Housekeeping request sent!");
+      setActiveTab("requests");
+    } catch (err) {
+      console.error("Housekeeping request error:", err);
+      alert("Failed to send request. Check internet / permissions.");
+    } finally {
+      setSending(false);
+    }
+  };
+
   const requestsList = useMemo(() => {
     const arr = requestIds
       .map((id) => requestsMap[id] || { id, status: "loading" })
@@ -355,12 +556,12 @@ export default function Dashboard() {
             <div style={styles.brand}>Roomio</div>
           </div>
           <button
-            onClick={() => navigate("/guest")}
+            onClick={handleLogout}
             style={styles.headerButton}
-            title="Exit"
+            title="Logout"
             className="tapButton"
           >
-            Exit
+            Logout
           </button>
         </div>
 
@@ -395,7 +596,9 @@ export default function Dashboard() {
               </div>
               <div style={styles.pillText}>
                 <div style={styles.pillLabel}>Session</div>
-                <div style={styles.pillValueGreen}>Verified</div>
+                <div style={styles.pillValueGreen}>
+                  {sessionExpired ? "Expired" : "Active"}
+                </div>
               </div>
             </div>
           </div>
@@ -470,18 +673,11 @@ export default function Dashboard() {
 
             <ServiceCard
               icon="🧹"
-              title="Housekeeping"
-              subtitle="Room cleaning"
+              title={housekeepingBlocked ? "Cooldown" : "Housekeeping"}
+              subtitle={housekeepingBlocked ? formatRemaining(housekeepingRemainingMs) : "Room cleaning"}
               accent="#F59E0B"
-              onClick={() => showToast("Request sent to housekeeping!")}
-            />
-
-            <ServiceCard
-              icon="📞"
-              title="Support"
-              subtitle="Front desk help"
-              accent="#6B7280"
-              onClick={() => showToast("Front desk alerted!")}
+              disabled={sending || housekeepingBlocked}
+              onClick={requestHousekeeping}
             />
           </div>
         ) : null}
@@ -610,7 +806,54 @@ function GlobalStyles() {
   );
 }
 
+// ✅ Add expired session styles
 const styles = {
+  expiredContainer: {
+    minHeight: "100vh",
+    backgroundColor: "#F9FAFB",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif'
+  },
+  expiredCard: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 24,
+    border: "1px solid #E5E7EB",
+    boxShadow: "0 12px 30px rgba(17, 24, 39, 0.08)",
+    maxWidth: 400,
+    width: "100%",
+    textAlign: "center"
+  },
+  expiredIcon: {
+    fontSize: 48,
+    marginBottom: 16
+  },
+  expiredTitle: {
+    fontSize: 22,
+    fontWeight: 900,
+    color: "#111827",
+    marginBottom: 8
+  },
+  expiredMessage: {
+    fontSize: 14,
+    color: "#6B7280",
+    marginBottom: 24,
+    lineHeight: 1.5
+  },
+  expiredButton: {
+    backgroundColor: "#2563EB",
+    color: "#fff",
+    border: "none",
+    padding: "12px 24px",
+    borderRadius: 12,
+    fontSize: 16,
+    fontWeight: 700,
+    cursor: "pointer",
+    width: "100%"
+  },
   page: { minHeight: "100vh", backgroundColor: "#F9FAFB", position: "relative", overflow: "hidden", fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif' },
   backgroundDecor: { position: "absolute", inset: 0, pointerEvents: "none" },
   bgCircle1: { position: "absolute", top: -100, right: -60, width: 220, height: 220, borderRadius: 110, backgroundColor: "rgba(37, 99, 235, 0.08)" },
@@ -623,7 +866,7 @@ const styles = {
   headerText: { display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 },
   greeting: { fontSize: 11, fontWeight: 700, letterSpacing: 1.4, color: "#6B7280" },
   brand: { fontSize: 20, fontWeight: 800, color: "#111827" },
-  headerButton: { height: 40, padding: "0 14px", borderRadius: 12, border: "1px solid #E5E7EB", backgroundColor: "#fff", color: "#2563EB", fontWeight: 800, cursor: "pointer", boxShadow: "0 2px 10px rgba(17, 24, 39, 0.05)" },
+  headerButton: { height: 40, padding: "0 14px", borderRadius: 12, border: "1px solid #E5E7EB", backgroundColor: "#fff", color: "#DC2626", fontWeight: 800, cursor: "pointer", boxShadow: "0 2px 10px rgba(17, 24, 39, 0.05)" },
   card: { backgroundColor: "#fff", borderRadius: 20, padding: 18, border: "1px solid #E5E7EB", boxShadow: "0 12px 30px rgba(17, 24, 39, 0.08)", marginBottom: 14 },
   cardTop: { display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 14, flexWrap: "wrap" },
   welcomeBlock: { minWidth: 200 },
