@@ -10,14 +10,13 @@ import {
   getDocs,
   doc,
   updateDoc,
-  Timestamp,
 } from "firebase/firestore";
 import { db } from "../firebase";
 
-const LAUNDRY_COOLDOWN_MS = 60 * 60 * 1000;
-const HOUSEKEEPING_COOLDOWN_MS = 60 * 60 * 1000;
+const LAUNDRY_COOLDOWN_MS = 60 * 60 * 1000; // ✅ 1 hour for laundry
+const HOUSEKEEPING_COOLDOWN_MS = 60 * 60 * 1000; // ✅ 1 hour for housekeeping
 
-function formatRemaining(ms: number) {
+function formatRemaining(ms) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
@@ -27,61 +26,13 @@ function formatRemaining(ms: number) {
   return `${m}m ${s}s`;
 }
 
-function formatTimeForProgress(ms: number) {
+function formatTimeForProgress(ms) {
   const totalMinutes = Math.max(0, Math.floor(ms / 60000));
   const minutes = totalMinutes % 60;
   const hours = Math.floor(totalMinutes / 60);
   
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
-}
-
-// Define types
-interface ServiceRequest {
-  id: string;
-  type: string;
-  status: string;
-  roomNumber: string | number;
-  guestName: string;
-  guestMobile: string;
-  adminId: string;
-  createdAt?: Timestamp;
-  acceptedAt?: Timestamp;
-  estimatedTime?: number;
-  percentage?: number;
-  remainingMs?: number;
-  arrivalNotified?: boolean;
-  dishName?: string;
-  mealCategory?: string;
-  notes?: string;
-  totalPrice?: number;
-  source?: string;
-}
-
-interface FoodOrder {
-  id: string;
-  item: string;
-  status: string;
-  roomNumber: string | number;
-  guestName: string;
-  guestMobile: string;
-  adminId: string;
-  totalPrice?: number;
-  notes?: string;
-  mealCategory?: string;
-  createdAt?: Timestamp;
-  acceptedAt?: Timestamp;
-  estimatedTime?: number;
-  completionTime?: string;
-}
-
-interface DashboardState {
-  guestName: string;
-  roomNumber: string | number;
-  mobile: string;
-  adminEmail: string;
-  adminId: string;
-  guestDocId: string;
 }
 
 export default function Dashboard() {
@@ -92,49 +43,56 @@ export default function Dashboard() {
   const [toast, setToast] = useState("");
   const [sessionExpired, setSessionExpired] = useState(false);
   
+  // ✅ Arrival notification modal
   const [showArrivalNotification, setShowArrivalNotification] = useState(false);
   const [arrivalService, setArrivalService] = useState("");
   const [arrivalRequestId, setArrivalRequestId] = useState("");
 
+  // ✅ Completion notification modal
   const [showCompletionModal, setShowCompletionModal] = useState(false);
   const [completedService, setCompletedService] = useState("");
   const [completedOrderId, setCompletedOrderId] = useState("");
 
-  const [activeTab, setActiveTab] = useState<"services" | "requests" | "food">("services");
+  // ✅ Tabs
+  const [activeTab, setActiveTab] = useState("services"); // "services" | "requests" | "food"
 
-  // Store ALL service requests (from query)
-  const [allServiceRequests, setAllServiceRequests] = useState<ServiceRequest[]>([]);
+  // ✅ Request tracking state
+  const [requestIds, setRequestIds] = useState([]);
+  const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
+  const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
   
-  // Store food service requests (from query)
-  const [foodServiceRequests, setFoodServiceRequests] = useState<ServiceRequest[]>([]);
+  // ✅ Food order tracking state - BOTH collections
+  const [foodRequestIds, setFoodRequestIds] = useState([]);
+  const [foodRequestsMap, setFoodRequestsMap] = useState({});
+  const foodRequestUnsubRef = useRef(null);
   
-  // Store food orders from menu
-  const [foodOrders, setFoodOrders] = useState<FoodOrder[]>([]);
+  // ✅ Food orders from menu
+  const [foodOrderIds, setFoodOrderIds] = useState([]);
+  const [foodOrdersMap, setFoodOrdersMap] = useState({});
+  const foodOrderUnsubRef = useRef(null);
   
-  const timerRefs = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  // ✅ Timer refs for progress bars
+  const timerRefs = useRef(new Map()); // Map<id, intervalId>
 
+  // ✅ Laundry cooldown state
   const [laundryBlocked, setLaundryBlocked] = useState(false);
   const [laundryRemainingMs, setLaundryRemainingMs] = useState(0);
   
+  // ✅ Housekeeping cooldown state
   const [housekeepingBlocked, setHousekeepingBlocked] = useState(false);
   const [housekeepingRemainingMs, setHousekeepingRemainingMs] = useState(0);
-
-  // Store IDs for localStorage
-  const [storedRequestIds, setStoredRequestIds] = useState<string[]>([]);
-  const [storedFoodOrderIds, setStoredFoodOrderIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!state) navigate("/guest");
   }, [state, navigate]);
 
-  const dashboardState = state as DashboardState;
-  const safeGuestName = dashboardState?.guestName || "Guest";
-  const safeRoomNumber = dashboardState?.roomNumber ?? "—";
-  const safeMobile = dashboardState?.mobile || "—";
-  const safeAdminEmail = dashboardState?.adminEmail || "—";
-  const adminId = dashboardState?.adminId || null;
-  const roomNumberForQuery = dashboardState?.roomNumber ?? null;
-  const guestDocId = dashboardState?.guestDocId || null;
+  const safeGuestName = state?.guestName || "Guest";
+  const safeRoomNumber = state?.roomNumber ?? "—";
+  const safeMobile = state?.mobile || "—";
+  const safeAdminEmail = state?.adminEmail || "—";
+  const adminId = state?.adminId || null;
+  const roomNumberForQuery = state?.roomNumber ?? null;
+  const guestDocId = state?.guestDocId || null;
 
   const maskedAdmin = useMemo(() => {
     if (!safeAdminEmail || safeAdminEmail === "—") return "—";
@@ -149,6 +107,13 @@ export default function Dashboard() {
     if (!safeMobile || safeMobile === "—") return null;
     if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
     return `roomio:requests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
+  }, [adminId, safeMobile, roomNumberForQuery]);
+
+  const foodRequestsStorageKey = useMemo(() => {
+    if (!adminId) return null;
+    if (!safeMobile || safeMobile === "—") return null;
+    if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
+    return `roomio:foodRequests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
 
   const foodOrdersStorageKey = useMemo(() => {
@@ -187,6 +152,7 @@ export default function Dashboard() {
   const handleLogout = async () => {
     await cleanupSession();
     
+    // Navigate back to guest login
     navigate("/guest", { 
       state: { 
         admin: safeAdminEmail 
@@ -198,10 +164,12 @@ export default function Dashboard() {
   useEffect(() => {
     if (!guestDocId || !adminId || !safeMobile) return;
 
+    // Listen to the guest document in real-time
     const guestDocRef = doc(db, "guests", guestDocId);
     
     const unsubscribe = onSnapshot(guestDocRef, (snapshot) => {
       if (!snapshot.exists()) {
+        // Document deleted (admin checked out)
         setSessionExpired(true);
         alert("Your session has expired. Admin has checked you out.");
         navigate("/guest", { replace: true });
@@ -210,14 +178,16 @@ export default function Dashboard() {
 
       const guestData = snapshot.data();
       
-      if (!guestData?.isLoggedIn) {
+      // Check if someone else logged in (isLoggedIn changed to false by another login)
+      if (!guestData.isLoggedIn) {
         setSessionExpired(true);
         alert("Someone else logged in with your mobile number. Your session has been terminated.");
         navigate("/guest", { replace: true });
         return;
       }
 
-      if (!guestData?.isActive) {
+      // Check if admin marked as inactive
+      if (!guestData.isActive) {
         setSessionExpired(true);
         alert("Your booking is no longer active. Please contact reception.");
         navigate("/guest", { replace: true });
@@ -230,11 +200,10 @@ export default function Dashboard() {
     return () => unsubscribe();
   }, [guestDocId, adminId, safeMobile, navigate]);
 
+  // ✅ Session management useEffect for cleanup
   useEffect(() => {
-    const handleBeforeUnload = async (e: BeforeUnloadEvent) => {
-      e.preventDefault();
+    const handleBeforeUnload = async (e) => {
       await cleanupSession();
-      e.returnValue = '';
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -245,7 +214,7 @@ export default function Dashboard() {
   }, [guestDocId]);
 
   // Load stored request IDs
-  const loadStoredRequestIds = (): string[] => {
+  const loadStoredRequestIds = () => {
     if (!storageKey) return [];
     try {
       const raw = localStorage.getItem(storageKey);
@@ -256,22 +225,50 @@ export default function Dashboard() {
     }
   };
 
-  const saveStoredRequestIds = (ids: string[]) => {
+  const saveStoredRequestIds = (ids) => {
     if (!storageKey) return;
     try {
       localStorage.setItem(storageKey, JSON.stringify(ids));
     } catch {}
   };
 
-  const addRequestIdToStorage = (id: string) => {
+  const addRequestIdToStorage = (id) => {
     if (!storageKey) return;
     const current = loadStoredRequestIds();
     const next = [id, ...current.filter((x) => x !== id)].slice(0, 30);
     saveStoredRequestIds(next);
-    setStoredRequestIds(next);
+    setRequestIds(next);
   };
 
-  const loadStoredFoodOrderIds = (): string[] => {
+  // Load stored food request IDs (from serviceRequests)
+  const loadStoredFoodRequestIds = () => {
+    if (!foodRequestsStorageKey) return [];
+    try {
+      const raw = localStorage.getItem(foodRequestsStorageKey);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveStoredFoodRequestIds = (ids) => {
+    if (!foodRequestsStorageKey) return;
+    try {
+      localStorage.setItem(foodRequestsStorageKey, JSON.stringify(ids));
+    } catch {}
+  };
+
+  const addFoodRequestIdToStorage = (id) => {
+    if (!foodRequestsStorageKey) return;
+    const current = loadStoredFoodRequestIds();
+    const next = [id, ...current.filter((x) => x !== id)].slice(0, 30);
+    saveStoredFoodRequestIds(next);
+    setFoodRequestIds(next);
+  };
+
+  // Load stored food order IDs (from menu)
+  const loadStoredFoodOrderIds = () => {
     if (!foodOrdersStorageKey) return [];
     try {
       const raw = localStorage.getItem(foodOrdersStorageKey);
@@ -282,19 +279,19 @@ export default function Dashboard() {
     }
   };
 
-  const saveStoredFoodOrderIds = (ids: string[]) => {
+  const saveStoredFoodOrderIds = (ids) => {
     if (!foodOrdersStorageKey) return;
     try {
       localStorage.setItem(foodOrdersStorageKey, JSON.stringify(ids));
     } catch {}
   };
 
-  const addFoodOrderIdToStorage = (id: string) => {
+  const addFoodOrderIdToStorage = (id) => {
     if (!foodOrdersStorageKey) return;
     const current = loadStoredFoodOrderIds();
     const next = [id, ...current.filter((x) => x !== id)].slice(0, 30);
     saveStoredFoodOrderIds(next);
-    setStoredFoodOrderIds(next);
+    setFoodOrderIds(next);
   };
 
   const clearRequestHistory = () => {
@@ -302,18 +299,23 @@ export default function Dashboard() {
     try {
       localStorage.removeItem(storageKey);
     } catch {}
-    setStoredRequestIds([]);
+    setRequestIds([]);
+    setRequestsMap({});
     // Clear all timers
     timerRefs.current.forEach((intervalId) => clearInterval(intervalId));
     timerRefs.current.clear();
   };
 
   const clearFoodOrderHistory = () => {
-    if (!foodOrdersStorageKey) return;
+    if (!foodRequestsStorageKey || !foodOrdersStorageKey) return;
     try {
+      localStorage.removeItem(foodRequestsStorageKey);
       localStorage.removeItem(foodOrdersStorageKey);
     } catch {}
-    setStoredFoodOrderIds([]);
+    setFoodRequestIds([]);
+    setFoodRequestsMap({});
+    setFoodOrderIds([]);
+    setFoodOrdersMap({});
   };
 
   // ✅ Booking query to validate session
@@ -338,6 +340,7 @@ export default function Dashboard() {
 
     const unsub = onSnapshot(bookingQuery, (snap) => {
       if (snap.empty) {
+        // Also cleanup session when booking is removed
         cleanupSession();
         navigate("/guest", { replace: true });
       }
@@ -350,11 +353,14 @@ export default function Dashboard() {
   useEffect(() => {
     if (!state) return;
     const ids = loadStoredRequestIds();
-    setStoredRequestIds(ids);
+    setRequestIds(ids);
+    
+    const foodReqIds = loadStoredFoodRequestIds();
+    setFoodRequestIds(foodReqIds);
     
     const foodOrderIds = loadStoredFoodOrderIds();
-    setStoredFoodOrderIds(foodOrderIds);
-  }, [state, storageKey, foodOrdersStorageKey]);
+    setFoodOrderIds(foodOrderIds);
+  }, [state, storageKey, foodRequestsStorageKey, foodOrdersStorageKey]);
 
   // ✅ Laundry cooldown timer
   useEffect(() => {
@@ -411,7 +417,7 @@ export default function Dashboard() {
   }, [housekeepingCooldownKey]);
 
   // ✅ Calculate progress for accepted/in-progress requests
-  const calculateProgress = (request: ServiceRequest) => {
+  const calculateProgress = (request) => {
     if (!request.estimatedTime) {
       return { percentage: 0, remainingMs: request.estimatedTime ? request.estimatedTime * 60 * 1000 : 0 };
     }
@@ -420,19 +426,26 @@ export default function Dashboard() {
       return { percentage: 0, remainingMs: request.estimatedTime * 60 * 1000 };
     }
     
-    let acceptedTime: number;
+    let acceptedTime;
     
-    if (request.acceptedAt instanceof Timestamp) {
+    // Check if acceptedAt is a Firestore Timestamp
+    if (request.acceptedAt.toMillis) {
       acceptedTime = request.acceptedAt.toMillis();
-    } else if (typeof request.acceptedAt === 'string') {
+    } 
+    // Check if it's a string timestamp
+    else if (typeof request.acceptedAt === 'string') {
       acceptedTime = new Date(request.acceptedAt).getTime();
-    } else if (typeof request.acceptedAt === 'number') {
+    }
+    // Check if it's a number
+    else if (typeof request.acceptedAt === 'number') {
       acceptedTime = request.acceptedAt;
-    } else {
+    }
+    // Fallback to current time
+    else {
       acceptedTime = Date.now();
     }
     
-    const estimatedMs = request.estimatedTime * 60 * 1000;
+    const estimatedMs = request.estimatedTime * 60 * 1000; // Convert minutes to ms
     const endTime = acceptedTime + estimatedMs;
     const now = Date.now();
     
@@ -451,62 +464,55 @@ export default function Dashboard() {
   const checkArrivalNotifications = () => {
     const now = Date.now();
     
-    allServiceRequests.forEach(request => {
+    Object.values(requestsMap).forEach(request => {
       if ((request.status === "in-progress") && 
           !request.arrivalNotified && 
-          request.estimatedTime &&
-          request.type !== "Food Order") {
+          request.estimatedTime) {
         
-        const acceptedTime = request.acceptedAt instanceof Timestamp 
-          ? request.acceptedAt.toMillis() 
-          : Date.now();
+        const acceptedTime = request.acceptedAt?.toMillis?.() || Date.now();
         const estimatedMs = request.estimatedTime * 60 * 1000;
         const timeUntilArrival = acceptedTime + estimatedMs - now;
         
+        // Show notification 2 minutes before arrival
         if (timeUntilArrival > 0 && timeUntilArrival <= 2 * 60 * 1000) {
           setArrivalService(request.type || "Service");
           setArrivalRequestId(request.id);
           setShowArrivalNotification(true);
           
-          // Mark as notified
-          setAllServiceRequests(prev => 
-            prev.map(req => 
-              req.id === request.id 
-                ? { ...req, arrivalNotified: true } 
-                : req
-            )
-          );
+          // Mark as notified in local state to prevent duplicate notifications
+          setRequestsMap(prev => ({
+            ...prev,
+            [request.id]: { ...prev[request.id], arrivalNotified: true }
+          }));
         }
       }
     });
   };
 
   // ✅ Check for food order completion notifications
-  const checkFoodOrderNotifications = (request: ServiceRequest) => {
+  const checkFoodOrderNotifications = (request) => {
     if (request.status === "completed" && !request.completionNotified) {
       setCompletedService(request.dishName || "Food Order");
       setCompletedOrderId(request.id);
       setShowCompletionModal(true);
       
       // Mark as notified
-      setFoodServiceRequests(prev => 
-        prev.map(req => 
-          req.id === request.id 
-            ? { ...req, completionNotified: true } 
-            : req
-        )
-      );
+      setFoodRequestsMap(prev => ({
+        ...prev,
+        [request.id]: { ...prev[request.id], completionNotified: true }
+      }));
     }
   };
 
   // ✅ Handle arrival notification confirmation
   const handleArrivalConfirm = async () => {
+    // Remove the request from local storage
     if (arrivalRequestId) {
-      // Remove from local storage
-      const updatedIds = storedRequestIds.filter(id => id !== arrivalRequestId);
+      const updatedIds = requestIds.filter(id => id !== arrivalRequestId);
       saveStoredRequestIds(updatedIds);
-      setStoredRequestIds(updatedIds);
+      setRequestIds(updatedIds);
       
+      // Update Firestore to mark as completed
       try {
         await updateDoc(doc(db, "serviceRequests", arrivalRequestId), {
           status: "completed",
@@ -532,10 +538,10 @@ export default function Dashboard() {
   // ✅ Handle completion notification confirmation
   const handleCompletionConfirm = () => {
     if (completedOrderId) {
-      // Remove from local storage
-      const updatedIds = storedFoodOrderIds.filter(id => id !== completedOrderId);
-      saveStoredFoodOrderIds(updatedIds);
-      setStoredFoodOrderIds(updatedIds);
+      // Remove the request from local storage
+      const updatedIds = foodRequestIds.filter(id => id !== completedOrderId);
+      saveStoredFoodRequestIds(updatedIds);
+      setFoodRequestIds(updatedIds);
       
       // Clear timer if exists
       if (timerRefs.current.has(`food-${completedOrderId}`)) {
@@ -549,87 +555,116 @@ export default function Dashboard() {
     setCompletedOrderId("");
   };
 
-  // ✅ Live listener for ALL service requests (including laundry/housekeeping)
+  // ✅ Live listeners for service requests (laundry/housekeeping)
   useEffect(() => {
-    if (!adminId || !safeMobile || !roomNumberForQuery) return;
+    const existing = unsubRef.current;
 
-    // Listen for ALL service requests (non-food)
-    const serviceRequestsQuery = query(
-      collection(db, "serviceRequests"),
-      where("adminId", "==", adminId),
-      where("guestMobile", "==", safeMobile),
-      where("roomNumber", "==", roomNumberForQuery)
-    );
-
-    const unsubscribe = onSnapshot(
-      serviceRequestsQuery,
-      (snapshot) => {
-        const requests: ServiceRequest[] = [];
-        
-        snapshot.forEach((doc) => {
-          const data = doc.data() as ServiceRequest;
-          const request = { id: doc.id, ...data };
-          
-          // Filter out food orders (they're handled separately)
-          if (request.type !== "Food Order") {
-            // Calculate progress for in-progress requests
-            if (request.status === "in-progress" && request.estimatedTime) {
-              const progress = calculateProgress(request);
-              request.percentage = progress.percentage;
-              request.remainingMs = progress.remainingMs;
-              
-              // Start timer for progress updates
-              if (!timerRefs.current.has(request.id)) {
-                const intervalId = setInterval(() => {
-                  setAllServiceRequests(prev => 
-                    prev.map(req => {
-                      if (req.id === request.id && req.status === "in-progress" && req.estimatedTime) {
-                        const progress = calculateProgress(req);
-                        return { ...req, ...progress };
-                      }
-                      return req;
-                    })
-                  );
-                }, 1000);
-                timerRefs.current.set(request.id, intervalId);
-              }
-            }
-            
-            // Stop timer if request is completed
-            if ((request.status === "completed" || request.status === "cancelled") && 
-                timerRefs.current.has(request.id)) {
-              clearInterval(timerRefs.current.get(request.id));
-              timerRefs.current.delete(request.id);
-            }
-            
-            requests.push(request);
-            
-            // Add to localStorage if it's a new request
-            if (!storedRequestIds.includes(request.id)) {
-              addRequestIdToStorage(request.id);
-            }
-          }
-        });
-        
-        setAllServiceRequests(requests);
-      },
-      (error) => {
-        console.error("Service requests listener error:", error);
+    // cleanup removed listeners
+    for (const [id, unsub] of existing.entries()) {
+      if (!requestIds.includes(id)) {
+        try {
+          unsub();
+        } catch {}
+        existing.delete(id);
       }
-    );
+    }
+
+    // add listeners for new IDs
+    requestIds.forEach((id) => {
+      if (existing.has(id)) return;
+
+      const ref = doc(db, "serviceRequests", id);
+
+      const unsub = onSnapshot(
+        ref,
+        (snap) => {
+          if (!snap.exists()) {
+            setRequestsMap((prev) => {
+              const copy = { ...prev };
+              copy[id] = { id, status: "deleted" };
+              return copy;
+            });
+            return;
+          }
+          const data = snap.data();
+          
+          // Skip food orders in this listener
+          if (data.type === "Food Order") return;
+          
+          const progressData = calculateProgress(data);
+          const updatedData = { 
+            id, 
+            ...data,
+            percentage: progressData.percentage,
+            remainingMs: progressData.remainingMs
+          };
+          
+          setRequestsMap((prev) => ({
+            ...prev,
+            [id]: updatedData,
+          }));
+          
+          // Start progress timer for in-progress requests with estimated time
+          if (data.status === "in-progress" && 
+              data.estimatedTime && 
+              data.acceptedAt) {
+            
+            // Clear existing timer if any
+            if (timerRefs.current.has(id)) {
+              clearInterval(timerRefs.current.get(id));
+            }
+            
+            const intervalId = setInterval(() => {
+              setRequestsMap(prev => {
+                if (!prev[id]) return prev;
+                const progress = calculateProgress(prev[id]);
+                return {
+                  ...prev,
+                  [id]: {
+                    ...prev[id],
+                    percentage: progress.percentage,
+                    remainingMs: progress.remainingMs
+                  }
+                };
+              });
+            }, 1000);
+            
+            timerRefs.current.set(id, intervalId);
+          }
+          
+          // Stop timer if request is completed or deleted
+          if ((data.status === "completed" || data.status === "deleted") && 
+              timerRefs.current.has(id)) {
+            clearInterval(timerRefs.current.get(id));
+            timerRefs.current.delete(id);
+          }
+        },
+        (err) => {
+          setRequestsMap((prev) => ({
+            ...prev,
+            [id]: { id, status: "restricted" },
+          }));
+        }
+      );
+
+      existing.set(id, unsub);
+    });
 
     return () => {
-      unsubscribe();
-      // Clear timers
-      timerRefs.current.forEach((intervalId) => clearInterval(intervalId));
-      timerRefs.current.clear();
+      for (const unsub of existing.values()) {
+        try {
+          unsub();
+        } catch {}
+      }
+      existing.clear();
     };
-  }, [adminId, safeMobile, roomNumberForQuery, storedRequestIds]);
+  }, [requestIds]);
 
-  // ✅ Live listener for FOOD service requests
+  // ✅ Live listener for FOOD service requests (from admin's Tracking.tsx)
   useEffect(() => {
     if (!adminId || !safeMobile || !roomNumberForQuery) return;
 
+    // Listen for service requests that are food orders
     const foodRequestsQuery = query(
       collection(db, "serviceRequests"),
       where("adminId", "==", adminId),
@@ -638,63 +673,102 @@ export default function Dashboard() {
       where("type", "==", "Food Order")
     );
 
+    // Clean up previous listener
+    if (foodRequestUnsubRef.current) {
+      foodRequestUnsubRef.current();
+    }
+
     const unsubscribe = onSnapshot(
       foodRequestsQuery,
       (snapshot) => {
-        const requests: ServiceRequest[] = [];
-        
-        snapshot.forEach((doc) => {
-          const data = doc.data() as ServiceRequest;
-          const request = { id: doc.id, ...data };
+        snapshot.docChanges().forEach((change) => {
+          const request = { id: change.doc.id, ...change.doc.data() };
           
-          // Calculate progress for in-progress requests
-          if (request.status === "in-progress" && request.estimatedTime) {
-            const progress = calculateProgress(request);
-            request.percentage = progress.percentage;
-            request.remainingMs = progress.remainingMs;
+          if (change.type === "added" || change.type === "modified") {
+            // Add to storage if this is a new request
+            if (change.type === "added") {
+              addFoodRequestIdToStorage(request.id);
+            }
             
-            // Start timer for progress updates
-            if (!timerRefs.current.has(`food-${request.id}`)) {
+            // Calculate progress
+            const progressData = calculateProgress(request);
+            const updatedRequest = {
+              ...request,
+              percentage: progressData.percentage,
+              remainingMs: progressData.remainingMs
+            };
+            
+            // Update food requests map
+            setFoodRequestsMap(prev => ({
+              ...prev,
+              [request.id]: updatedRequest
+            }));
+            
+            // Check for completion notification
+            checkFoodOrderNotifications(request);
+            
+            // Start progress timer for in-progress requests with estimated time
+            if (request.status === "in-progress" && request.estimatedTime && request.acceptedAt) {
+              // Clear existing timer if any
+              if (timerRefs.current.has(`food-${request.id}`)) {
+                clearInterval(timerRefs.current.get(`food-${request.id}`));
+              }
+              
               const intervalId = setInterval(() => {
-                setFoodServiceRequests(prev => 
-                  prev.map(req => {
-                    if (req.id === request.id && req.status === "in-progress" && req.estimatedTime) {
-                      const progress = calculateProgress(req);
-                      return { ...req, ...progress };
+                setFoodRequestsMap(prev => {
+                  if (!prev[request.id]) return prev;
+                  const progress = calculateProgress(prev[request.id]);
+                  return {
+                    ...prev,
+                    [request.id]: {
+                      ...prev[request.id],
+                      percentage: progress.percentage,
+                      remainingMs: progress.remainingMs
                     }
-                    return req;
-                  })
-                );
+                  };
+                });
               }, 1000);
+              
               timerRefs.current.set(`food-${request.id}`, intervalId);
+            }
+            
+            // Stop timer if request is completed or cancelled
+            if ((request.status === "completed" || request.status === "cancelled") && 
+                timerRefs.current.has(`food-${request.id}`)) {
+              clearInterval(timerRefs.current.get(`food-${request.id}`));
+              timerRefs.current.delete(`food-${request.id}`);
             }
           }
           
-          // Check for completion notification
-          if (request.status === "completed" && !request.completionNotified) {
-            checkFoodOrderNotifications(request);
+          if (change.type === "removed") {
+            // Remove from local state
+            setFoodRequestsMap(prev => {
+              const copy = { ...prev };
+              delete copy[request.id];
+              return copy;
+            });
+            
+            // Clear timer if exists
+            if (timerRefs.current.has(`food-${request.id}`)) {
+              clearInterval(timerRefs.current.get(`food-${request.id}`));
+              timerRefs.current.delete(`food-${request.id}`);
+            }
           }
-          
-          // Stop timer if request is completed
-          if ((request.status === "completed" || request.status === "cancelled") && 
-              timerRefs.current.has(`food-${request.id}`)) {
-            clearInterval(timerRefs.current.get(`food-${request.id}`));
-            timerRefs.current.delete(`food-${request.id}`);
-          }
-          
-          requests.push(request);
         });
-        
-        setFoodServiceRequests(requests);
       },
       (error) => {
         console.error("Food service requests listener error:", error);
       }
     );
 
+    foodRequestUnsubRef.current = unsubscribe;
+
     return () => {
-      unsubscribe();
-      // Clear food timers
+      if (foodRequestUnsubRef.current) {
+        foodRequestUnsubRef.current();
+      }
+      
+      // Clear food request timers
       timerRefs.current.forEach((intervalId, key) => {
         if (key.startsWith('food-')) {
           clearInterval(intervalId);
@@ -708,48 +782,72 @@ export default function Dashboard() {
   useEffect(() => {
     if (!adminId || !safeMobile || !roomNumberForQuery) return;
 
+    // Listen for food orders from the menu
     const foodOrdersQuery = query(
       collection(db, "users", adminId, "foodOrders"),
       where("guestMobile", "==", safeMobile),
       where("roomNumber", "==", roomNumberForQuery)
     );
 
+    // Clean up previous listener
+    if (foodOrderUnsubRef.current) {
+      foodOrderUnsubRef.current();
+    }
+
     const unsubscribe = onSnapshot(
       foodOrdersQuery,
       (snapshot) => {
-        const orders: FoodOrder[] = [];
-        
-        snapshot.forEach((doc) => {
-          const data = doc.data() as FoodOrder;
-          const order = { id: doc.id, ...data };
-          orders.push(order);
+        snapshot.docChanges().forEach((change) => {
+          const order = { id: change.doc.id, ...change.doc.data() };
           
-          // Add to localStorage if it's a new order
-          if (!storedFoodOrderIds.includes(order.id)) {
-            addFoodOrderIdToStorage(order.id);
+          if (change.type === "added" || change.type === "modified") {
+            // Add to storage if this is a new order
+            if (change.type === "added") {
+              addFoodOrderIdToStorage(order.id);
+            }
+            
+            // Update food orders map
+            setFoodOrdersMap(prev => ({
+              ...prev,
+              [order.id]: order
+            }));
+          }
+          
+          if (change.type === "removed") {
+            // Remove from local state
+            setFoodOrdersMap(prev => {
+              const copy = { ...prev };
+              delete copy[order.id];
+              return copy;
+            });
           }
         });
-        
-        setFoodOrders(orders);
       },
       (error) => {
         console.error("Food orders listener error:", error);
       }
     );
 
-    return () => unsubscribe();
-  }, [adminId, safeMobile, roomNumberForQuery, storedFoodOrderIds]);
+    foodOrderUnsubRef.current = unsubscribe;
+
+    return () => {
+      if (foodOrderUnsubRef.current) {
+        foodOrderUnsubRef.current();
+      }
+    };
+  }, [adminId, safeMobile, roomNumberForQuery]);
 
   // ✅ Check for arrival notifications periodically
   useEffect(() => {
     const interval = setInterval(checkArrivalNotifications, 30000);
     return () => clearInterval(interval);
-  }, [allServiceRequests]);
+  }, [requestsMap]);
 
   // ✅ Combine all food orders for display
   const allFoodOrders = useMemo(() => {
     // Get food orders from menu
-    const menuOrders = foodOrders
+    const menuOrders = foodOrderIds
+      .map((id) => foodOrdersMap[id] || { id, status: "loading", source: "menu" })
       .filter(order => order.status !== "completed" && order.status !== "cancelled")
       .map(order => ({
         ...order,
@@ -758,8 +856,9 @@ export default function Dashboard() {
         createdMs: order?.createdAt?.toMillis?.() ?? 0,
       }));
 
-    // Get food service requests
-    const serviceFoods = foodServiceRequests
+    // Get food service requests (from admin tracking)
+    const serviceFoods = foodRequestIds
+      .map((id) => foodRequestsMap[id] || { id, status: "loading", source: "service" })
       .filter(request => request.type === "Food Order")
       .map(request => ({
         ...request,
@@ -773,18 +872,7 @@ export default function Dashboard() {
       .sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
 
     return combined;
-  }, [foodOrders, foodServiceRequests]);
-
-  // Filter service requests (non-food)
-  const serviceRequestsList = useMemo(() => {
-    return allServiceRequests
-      .filter(request => request.type !== "Food Order")
-      .sort((a, b) => {
-        const aTime = a?.createdAt?.toMillis?.() ?? 0;
-        const bTime = b?.createdAt?.toMillis?.() ?? 0;
-        return bTime - aTime;
-      });
-  }, [allServiceRequests]);
+  }, [foodOrderIds, foodOrdersMap, foodRequestIds, foodRequestsMap]);
 
   // ✅ Show session expired message
   if (sessionExpired) {
@@ -810,7 +898,7 @@ export default function Dashboard() {
   if (!state) return null;
 
   // ✅ Toast helper
-  const showToast = (msg: string) => {
+  const showToast = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(""), 2500);
   };
@@ -858,6 +946,7 @@ export default function Dashboard() {
 
       addRequestIdToStorage(docRef.id);
       
+      // Start cooldown
       if (laundryCooldownKey) {
         localStorage.setItem(laundryCooldownKey, String(Date.now()));
       }
@@ -915,6 +1004,7 @@ export default function Dashboard() {
 
       addRequestIdToStorage(docRef.id);
       
+      // Start cooldown
       if (housekeepingCooldownKey) {
         localStorage.setItem(housekeepingCooldownKey, String(Date.now()));
       }
@@ -929,7 +1019,19 @@ export default function Dashboard() {
     }
   };
 
-  const statusChip = (status: string) => {
+  const requestsList = useMemo(() => {
+    const arr = requestIds
+      .map((id) => requestsMap[id] || { id, status: "loading" })
+      .map((r) => ({
+        ...r,
+        createdMs: r?.createdAt?.toMillis?.() ?? 0,
+      }))
+      .sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
+
+    return arr;
+  }, [requestIds, requestsMap]);
+
+  const statusChip = (status) => {
     const s = (status || "pending").toLowerCase();
     if (s === "accepted") return { bg: "rgba(37,99,235,0.12)", text: "#2563EB", label: "ACCEPTED" };
     if (s === "completed") return { bg: "rgba(22,163,74,0.12)", text: "#16A34A", label: "COMPLETED" };
@@ -941,13 +1043,10 @@ export default function Dashboard() {
     return { bg: "rgba(245,158,11,0.14)", text: "#F59E0B", label: "PENDING" };
   };
 
-  const formatTime = (t: any) => {
+  const formatTime = (t) => {
     try {
-      if (t instanceof Timestamp) {
-        const d = t.toDate();
-        return d.toLocaleString();
-      }
-      return "Just now";
+      const d = t?.toDate?.();
+      return d ? d.toLocaleString() : "Just now";
     } catch {
       return "Just now";
     }
@@ -955,11 +1054,13 @@ export default function Dashboard() {
 
   // ✅ Navigate to Menu Page
   const goToMenu = () => {
-    navigate("/menu", { state: dashboardState });
+    navigate("/menu", { state });
   };
 
   return (
     <div style={styles.page} className="safeArea">
+      <GlobalStyles />
+
       {/* ✅ ARRIVAL NOTIFICATION MODAL */}
       {showArrivalNotification && (
         <div style={styles.arrivalOverlay}>
@@ -1095,7 +1196,7 @@ export default function Dashboard() {
             onClick={() => setActiveTab("services")}
             style={{
               ...styles.tabBtn,
-              ...(activeTab === "services" ? styles.tabBtnActive : {}),
+              ...(activeTab === "services" ? styles.tabBtnActive : null),
             }}
           >
             Services
@@ -1105,12 +1206,12 @@ export default function Dashboard() {
             onClick={() => setActiveTab("requests")}
             style={{
               ...styles.tabBtn,
-              ...(activeTab === "requests" ? styles.tabBtnActive : {}),
+              ...(activeTab === "requests" ? styles.tabBtnActive : null),
             }}
           >
             Requests
-            {serviceRequestsList.length ? (
-              <span style={styles.tabBadge}>{serviceRequestsList.length}</span>
+            {requestIds.length ? (
+              <span style={styles.tabBadge}>{requestIds.length}</span>
             ) : null}
           </button>
           <button
@@ -1118,7 +1219,7 @@ export default function Dashboard() {
             onClick={() => setActiveTab("food")}
             style={{
               ...styles.tabBtn,
-              ...(activeTab === "food" ? styles.tabBtnActive : {}),
+              ...(activeTab === "food" ? styles.tabBtnActive : null),
             }}
           >
             Food Orders
@@ -1130,6 +1231,7 @@ export default function Dashboard() {
 
         {activeTab === "services" ? (
           <div style={styles.grid} className="servicesGrid">
+            {/* ✅ Navigate to Menu Page */}
             <ServiceCard
               icon="🍽"
               title="Food Menu"
@@ -1174,14 +1276,14 @@ export default function Dashboard() {
                 className="tapButton"
                 onClick={clearRequestHistory}
                 style={styles.clearBtn}
-                disabled={!storedRequestIds.length}
+                disabled={!requestIds.length}
                 title="Clear local history"
               >
                 Clear
               </button>
             </div>
 
-            {serviceRequestsList.length === 0 ? (
+            {requestIds.length === 0 ? (
               <div style={styles.emptyBox}>
                 <div style={styles.emptyTitle}>No requests yet</div>
                 <div style={styles.emptySub}>
@@ -1190,7 +1292,7 @@ export default function Dashboard() {
               </div>
             ) : (
               <div style={styles.reqList}>
-                {serviceRequestsList.map((r) => {
+                {requestsList.map((r) => {
                   const chip = statusChip(r.status);
                   const isInProgress = r.status === "in-progress";
                   const hasEstimatedTime = isInProgress && r.estimatedTime;
@@ -1210,6 +1312,7 @@ export default function Dashboard() {
                         Room {r.roomNumber ?? safeRoomNumber} • {formatTime(r.createdAt)}
                       </div>
                       
+                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS REQUESTS */}
                       {hasProgress && (
                         <div style={styles.progressSection}>
                           <div style={styles.progressHeader}>
@@ -1264,7 +1367,7 @@ export default function Dashboard() {
                 className="tapButton"
                 onClick={clearFoodOrderHistory}
                 style={styles.clearBtn}
-                disabled={!storedFoodOrderIds.length}
+                disabled={!allFoodOrders.length}
                 title="Clear food order history"
               >
                 Clear
@@ -1281,17 +1384,21 @@ export default function Dashboard() {
             ) : (
               <div style={styles.reqList}>
                 {allFoodOrders.map((order) => {
+                  // Determine status based on source
                   let status = order.status;
                   let showProgress = false;
                   let estimatedTime = order.estimatedTime;
                   let percentage = order.percentage || 0;
                   let remainingMs = order.remainingMs || 0;
                   
+                  // For menu orders that are accepted, check if there's a corresponding service request
                   if (order.source === "menu" && order.status === "accepted") {
-                    const matchingService = foodServiceRequests.find(
-                      req => req.guestMobile === safeMobile && 
+                    // Look for corresponding service request
+                    const matchingService = Object.values(foodRequestsMap).find(
+                      req => req.foodOrderId === order.id || 
+                      (req.guestMobile === safeMobile && 
                        req.roomNumber === safeRoomNumber &&
-                       req.dishName === order.item
+                       req.dishName === order.item)
                     );
                     
                     if (matchingService) {
@@ -1303,6 +1410,7 @@ export default function Dashboard() {
                     }
                   }
                   
+                  // For service requests
                   if (order.source === "service") {
                     showProgress = order.status === "in-progress" && order.estimatedTime;
                   }
@@ -1338,6 +1446,7 @@ export default function Dashboard() {
                         {order.source === "menu" && <span style={{color: "#9CA3AF", fontSize: 10, marginLeft: 6}}>(from menu)</span>}
                       </div>
                       
+                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS ORDERS */}
                       {showProgress && !isCompleted && (
                         <div style={styles.progressSection}>
                           <div style={styles.progressHeader}>
@@ -1364,6 +1473,7 @@ export default function Dashboard() {
                         </div>
                       )}
                       
+                      {/* ✅ PENDING MESSAGE */}
                       {isPending && (
                         <div style={styles.pendingMessage}>
                           <span style={styles.pendingIcon}>⏳</span>
@@ -1375,6 +1485,7 @@ export default function Dashboard() {
                         </div>
                       )}
                       
+                      {/* ✅ ACCEPTED BUT NOT STARTED */}
                       {isAccepted && !showProgress && (
                         <div style={styles.acceptedMessage}>
                           <span style={styles.acceptedIcon}>✅</span>
@@ -1382,6 +1493,7 @@ export default function Dashboard() {
                         </div>
                       )}
                       
+                      {/* ✅ COMPLETED MESSAGE */}
                       {isCompleted && (
                         <div style={styles.completedMessage}>
                           <span style={styles.completedIcon}>✅</span>
@@ -1419,21 +1531,7 @@ export default function Dashboard() {
   );
 }
 
-function ServiceCard({ 
-  icon, 
-  title, 
-  subtitle, 
-  accent, 
-  onClick, 
-  disabled 
-}: { 
-  icon: string; 
-  title: string; 
-  subtitle: string; 
-  accent: string; 
-  onClick: () => void; 
-  disabled?: boolean;
-}) {
+function ServiceCard({ icon, title, subtitle, accent, onClick, disabled }) {
   return (
     <button
       onClick={onClick}
@@ -1486,6 +1584,322 @@ function GlobalStyles() {
 }
 
 const styles = {
+  // ✅ Tab Row Styles (updated for 3 tabs)
+  tabRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 10,
+    marginBottom: 12,
+  },
+  tabBtn: {
+    height: 44,
+    borderRadius: 14,
+    border: "1px solid #E5E7EB",
+    backgroundColor: "#fff",
+    fontWeight: 900,
+    color: "#6B7280",
+    cursor: "pointer",
+    boxShadow: "0 2px 10px rgba(17, 24, 39, 0.05)",
+    fontSize: 12,
+  },
+  tabBtnActive: {
+    backgroundColor: "#2563EB",
+    borderColor: "#2563EB",
+    color: "#fff",
+  },
+  tabBadge: {
+    marginLeft: 8,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 18,
+    height: 18,
+    padding: "0 6px",
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.25)",
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: 900,
+  },
+  
+  // ✅ Completion Notification Styles
+  completionOverlay: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 9999,
+    padding: 20,
+  },
+  completionModal: {
+    backgroundColor: "#fff",
+    borderRadius: 24,
+    padding: 30,
+    maxWidth: 400,
+    width: "100%",
+    textAlign: "center",
+    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.3)",
+    border: "2px solid #16A34A",
+  },
+  completionIcon: {
+    fontSize: 60,
+    marginBottom: 20,
+    animation: "pulse 1.5s infinite",
+  },
+  completionTitle: {
+    fontSize: 24,
+    fontWeight: 900,
+    color: "#111827",
+    marginBottom: 12,
+  },
+  completionMessage: {
+    fontSize: 16,
+    color: "#6B7280",
+    marginBottom: 24,
+    lineHeight: 1.5,
+  },
+  completionActions: {
+    display: "flex",
+    gap: 12,
+  },
+  completionConfirmBtn: {
+    flex: 1,
+    backgroundColor: "#16A34A",
+    color: "#fff",
+    border: "none",
+    padding: "16px 24px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    transition: "all 0.2s ease",
+  },
+  
+  // ✅ Accepted Message Styles
+  acceptedMessage: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    border: "1px solid rgba(37, 99, 235, 0.25)",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  acceptedIcon: {
+    fontSize: 16,
+    color: "#2563EB",
+  },
+  acceptedText: {
+    color: "#2563EB",
+    fontWeight: 800,
+    fontSize: 13,
+  },
+  
+  // ✅ Pending Message Styles
+  pendingMessage: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
+    border: "1px solid rgba(245, 158, 11, 0.25)",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  pendingIcon: {
+    fontSize: 16,
+    color: "#F59E0B",
+  },
+  pendingText: {
+    color: "#F59E0B",
+    fontWeight: 800,
+    fontSize: 13,
+  },
+  
+  // ✅ Completed Message Styles
+  completedMessage: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(22, 163, 74, 0.12)",
+    border: "1px solid rgba(22, 163, 74, 0.25)",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  completedIcon: {
+    fontSize: 16,
+    color: "#16A34A",
+  },
+  completedText: {
+    color: "#16A34A",
+    fontWeight: 800,
+    fontSize: 13,
+  },
+  
+  // ✅ Notes Styles
+  reqNotes: {
+    marginTop: 8,
+    padding: 10,
+    backgroundColor: "#F9FAFB",
+    borderRadius: 8,
+    fontSize: 13,
+    color: "#6B7280",
+    borderLeft: "3px solid #F59E0B",
+  },
+  
+  // ✅ Arrival Notification Styles
+  arrivalOverlay: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 9999,
+    padding: 20,
+  },
+  arrivalModal: {
+    backgroundColor: "#fff",
+    borderRadius: 24,
+    padding: 30,
+    maxWidth: 400,
+    width: "100%",
+    textAlign: "center",
+    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.3)",
+    border: "2px solid #2563EB",
+  },
+  arrivalIcon: {
+    fontSize: 60,
+    marginBottom: 20,
+    animation: "pulse 1.5s infinite",
+  },
+  arrivalTitle: {
+    fontSize: 24,
+    fontWeight: 900,
+    color: "#111827",
+    marginBottom: 12,
+  },
+  arrivalMessage: {
+    fontSize: 16,
+    color: "#6B7280",
+    marginBottom: 24,
+    lineHeight: 1.5,
+  },
+  arrivalActions: {
+    display: "flex",
+    gap: 12,
+  },
+  arrivalConfirmBtn: {
+    flex: 1,
+    backgroundColor: "#16A34A",
+    color: "#fff",
+    border: "none",
+    padding: "16px 24px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    transition: "all 0.2s ease",
+  },
+  
+  // ✅ Progress Bar Styles
+  progressSection: {
+    marginTop: 16,
+    padding: 14,
+    backgroundColor: "#F9FAFB",
+    borderRadius: 12,
+    border: "1px solid #E5E7EB",
+  },
+  progressHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  progressLabel: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: "#111827",
+  },
+  progressPercentage: {
+    fontSize: 13,
+    fontWeight: 900,
+    color: "#2563EB",
+  },
+  progressBar: {
+    height: 8,
+    backgroundColor: "#E5E7EB",
+    borderRadius: 4,
+    overflow: "hidden",
+    marginBottom: 8,
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 4,
+    transition: "width 1s ease",
+  },
+  progressSubtext: {
+    fontSize: 11,
+    color: "#6B7280",
+    fontWeight: 700,
+  },
+  
+  expiredContainer: {
+    minHeight: "100vh",
+    backgroundColor: "#F9FAFB",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif'
+  },
+  expiredCard: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 24,
+    border: "1px solid #E5E7EB",
+    boxShadow: "0 12px 30px rgba(17, 24, 39, 0.08)",
+    maxWidth: 400,
+    width: "100%",
+    textAlign: "center"
+  },
+  expiredIcon: {
+    fontSize: 48,
+    marginBottom: 16
+  },
+  expiredTitle: {
+    fontSize: 22,
+    fontWeight: 900,
+    color: "#111827",
+    marginBottom: 8
+  },
+  expiredMessage: {
+    fontSize: 14,
+    color: "#6B7280",
+    marginBottom: 24,
+    lineHeight: 1.5
+  },
+  expiredButton: {
+    backgroundColor: "#2563EB",
+    color: "#fff",
+    border: "none",
+    padding: "12px 24px",
+    borderRadius: 12,
+    fontSize: 16,
+    fontWeight: 700,
+    cursor: "pointer",
+    width: "100%"
+  },
   page: { minHeight: "100vh", backgroundColor: "#F9FAFB", position: "relative", overflow: "hidden", fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif' },
   backgroundDecor: { position: "absolute", inset: 0, pointerEvents: "none" },
   bgCircle1: { position: "absolute", top: -100, right: -60, width: 220, height: 220, borderRadius: 110, backgroundColor: "rgba(37, 99, 235, 0.08)" },
@@ -1521,85 +1935,3 @@ const styles = {
   adminText: { minWidth: 0 },
   adminIcon: { width: 38, height: 38, borderRadius: 14, backgroundColor: "rgba(37, 99, 235, 0.08)", display: "flex", alignItems: "center", justifyContent: "center" },
   adminLabel: { fontSize: 11, color: "#6B7280", fontWeight: 800 },
-  adminValue: { fontSize: 13, fontWeight: 900, color: "#111827", marginTop: 2 },
-  adminRight: { display: "flex", alignItems: "center", gap: 8 },
-  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#22C55E", animation: "pulse 2s infinite" },
-  statusText: { fontSize: 12, fontWeight: 800, color: "#22C55E" },
-  toast: { marginTop: 12, padding: "12px 14px", backgroundColor: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 12, fontSize: 13, fontWeight: 800, color: "#111827", textAlign: "center" },
-  tabRow: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 },
-  tabBtn: { height: 44, borderRadius: 14, border: "1px solid #E5E7EB", backgroundColor: "#fff", fontWeight: 900, color: "#6B7280", cursor: "pointer", boxShadow: "0 2px 10px rgba(17, 24, 39, 0.05)", fontSize: 12 },
-  tabBtnActive: { backgroundColor: "#2563EB", borderColor: "#2563EB", color: "#fff" },
-  tabBadge: { marginLeft: 8, display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 18, height: 18, padding: "0 6px", borderRadius: 999, backgroundColor: "rgba(255,255,255,0.25)", color: "#fff", fontSize: 12, fontWeight: 900 },
-  grid: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 },
-  serviceCard: { display: "flex", alignItems: "center", gap: 12, backgroundColor: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, borderLeftWidth: 4, borderLeftStyle: "solid", textAlign: "left", width: "100%" },
-  serviceIconWrap: { width: 44, height: 44, borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center" },
-  serviceIcon: { fontSize: 20 },
-  serviceText: { flex: 1, minWidth: 0 },
-  serviceTitle: { fontSize: 14, fontWeight: 800, color: "#111827", marginBottom: 2 },
-  serviceSubtitle: { fontSize: 11, color: "#6B7280", fontWeight: 700 },
-  serviceAction: { display: "flex", alignItems: "center", gap: 4 },
-  serviceActionText: { fontSize: 12, color: "#6B7280", fontWeight: 800 },
-  serviceArrow: { fontSize: 14, color: "#6B7280", fontWeight: 900 },
-  sectionHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
-  sectionLeft: { display: "flex", alignItems: "center", gap: 10 },
-  sectionIcon: { width: 30, height: 30, borderRadius: 10, backgroundColor: "#2563EB", display: "flex", alignItems: "center", justifyContent: "center" },
-  sectionTitle: { fontSize: 16, fontWeight: 900, color: "#111827" },
-  clearBtn: { padding: "8px 12px", borderRadius: 10, border: "1px solid #E5E7EB", backgroundColor: "#fff", color: "#DC2626", fontSize: 12, fontWeight: 800, cursor: "pointer" },
-  emptyBox: { backgroundColor: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 24, textAlign: "center", marginBottom: 12 },
-  emptyTitle: { fontSize: 16, fontWeight: 800, color: "#111827", marginBottom: 6 },
-  emptySub: { fontSize: 13, color: "#6B7280" },
-  reqList: { display: "flex", flexDirection: "column", gap: 10 },
-  reqCard: { backgroundColor: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 },
-  reqTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 },
-  reqType: { fontSize: 15, fontWeight: 900, color: "#111827", flex: 1 },
-  reqStatus: { fontSize: 10, fontWeight: 900, padding: "4px 8px", borderRadius: 8 },
-  reqMeta: { fontSize: 12, color: "#6B7280", marginBottom: 12 },
-  reqIdRow: { display: "flex", alignItems: "center", gap: 8, marginTop: 12, paddingTop: 12, borderTop: "1px solid #E5E7EB" },
-  reqIdLabel: { fontSize: 11, color: "#6B7280", fontWeight: 800 },
-  reqIdValue: { fontSize: 11, color: "#111827", fontWeight: 700, fontFamily: "monospace", wordBreak: "break-all" },
-  expiredContainer: { minHeight: "100vh", backgroundColor: "#F9FAFB", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif' },
-  expiredCard: { backgroundColor: "#fff", borderRadius: 20, padding: 24, border: "1px solid #E5E7EB", boxShadow: "0 12px 30px rgba(17, 24, 39, 0.08)", maxWidth: 400, width: "100%", textAlign: "center" },
-  expiredIcon: { fontSize: 48, marginBottom: 16 },
-  expiredTitle: { fontSize: 22, fontWeight: 900, color: "#111827", marginBottom: 8 },
-  expiredMessage: { fontSize: 14, color: "#6B7280", marginBottom: 24, lineHeight: 1.5 },
-  expiredButton: { backgroundColor: "#2563EB", color: "#fff", border: "none", padding: "12px 24px", borderRadius: 12, fontSize: 16, fontWeight: 700, cursor: "pointer", width: "100%" },
-  arrivalOverlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0, 0, 0, 0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 20 },
-  arrivalModal: { backgroundColor: "#fff", borderRadius: 24, padding: 30, maxWidth: 400, width: "100%", textAlign: "center", boxShadow: "0 20px 60px rgba(0, 0, 0, 0.3)", border: "2px solid #2563EB" },
-  arrivalIcon: { fontSize: 60, marginBottom: 20, animation: "pulse 1.5s infinite" },
-  arrivalTitle: { fontSize: 24, fontWeight: 900, color: "#111827", marginBottom: 12 },
-  arrivalMessage: { fontSize: 16, color: "#6B7280", marginBottom: 24, lineHeight: 1.5 },
-  arrivalActions: { display: "flex", gap: 12 },
-  arrivalConfirmBtn: { flex: 1, backgroundColor: "#16A34A", color: "#fff", border: "none", padding: "16px 24px", borderRadius: 14, fontSize: 16, fontWeight: 900, cursor: "pointer", transition: "all 0.2s ease" },
-  completionOverlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0, 0, 0, 0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 20 },
-  completionModal: { backgroundColor: "#fff", borderRadius: 24, padding: 30, maxWidth: 400, width: "100%", textAlign: "center", boxShadow: "0 20px 60px rgba(0, 0, 0, 0.3)", border: "2px solid #16A34A" },
-  completionIcon: { fontSize: 60, marginBottom: 20, animation: "pulse 1.5s infinite" },
-  completionTitle: { fontSize: 24, fontWeight: 900, color: "#111827", marginBottom: 12 },
-  completionMessage: { fontSize: 16, color: "#6B7280", marginBottom: 24, lineHeight: 1.5 },
-  completionActions: { display: "flex", gap: 12 },
-  completionConfirmBtn: { flex: 1, backgroundColor: "#16A34A", color: "#fff", border: "none", padding: "16px 24px", borderRadius: 14, fontSize: 16, fontWeight: 900, cursor: "pointer", transition: "all 0.2s ease" },
-  acceptedMessage: { marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: "rgba(37, 99, 235, 0.12)", border: "1px solid rgba(37, 99, 235, 0.25)", display: "flex", alignItems: "center", gap: 8 },
-  acceptedIcon: { fontSize: 16, color: "#2563EB" },
-  acceptedText: { color: "#2563EB", fontWeight: 800, fontSize: 13 },
-  pendingMessage: { marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: "rgba(245, 158, 11, 0.12)", border: "1px solid rgba(245, 158, 11, 0.25)", display: "flex", alignItems: "center", gap: 8 },
-  pendingIcon: { fontSize: 16, color: "#F59E0B" },
-  pendingText: { color: "#F59E0B", fontWeight: 800, fontSize: 13 },
-  completedMessage: { marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: "rgba(22, 163, 74, 0.12)", border: "1px solid rgba(22, 163, 74, 0.25)", display: "flex", alignItems: "center", gap: 8 },
-  completedIcon: { fontSize: 16, color: "#16A34A" },
-  completedText: { color: "#16A34A", fontWeight: 800, fontSize: 13 },
-  reqNotes: { marginTop: 8, padding: 10, backgroundColor: "#F9FAFB", borderRadius: 8, fontSize: 13, color: "#6B7280", borderLeft: "3px solid #F59E0B" },
-  progressSection: { marginTop: 16, padding: 14, backgroundColor: "#F9FAFB", borderRadius: 12, border: "1px solid #E5E7EB" },
-  progressHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
-  progressLabel: { fontSize: 13, fontWeight: 800, color: "#111827" },
-  progressPercentage: { fontSize: 13, fontWeight: 900, color: "#2563EB" },
-  progressBar: { height: 8, backgroundColor: "#E5E7EB", borderRadius: 4, overflow: "hidden", marginBottom: 8 },
-  progressFill: { height: "100%", borderRadius: 4, transition: "width 1s ease" },
-  progressSubtext: { fontSize: 11, color: "#6B7280", fontWeight: 700 },
-  footer: { marginTop: 20, paddingTop: 16, borderTop: "1px solid #E5E7EB" },
-  footerRow: { display: "flex", justifyContent: "center", marginBottom: 12 },
-  footerPill: { display: "flex", alignItems: "center", gap: 8, backgroundColor: "#F9FAFB", padding: "8px 12px", borderRadius: 12, border: "1px solid #E5E7EB" },
-  footerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#22C55E" },
-  footerText: { fontSize: 11, fontWeight: 800, color: "#6B7280" },
-  versionRow: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },
-  version: { fontSize: 10, fontWeight: 800, color: "#9CA3AF", letterSpacing: 1 },
-  versionDivider: { width: 4, height: 4, borderRadius: 2, backgroundColor: "#D1D5DB" },
-} as const;
