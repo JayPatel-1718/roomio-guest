@@ -15,7 +15,7 @@ export default function Menu() {
   const navigate = useNavigate();
 
   const [menuItems, setMenuItems] = useState([]);
-  const [cart, setCart] = useState({}); // { itemId: count }
+  const [cart, setCart] = useState({});
   const [ordering, setOrdering] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [loading, setLoading] = useState(true);
@@ -27,7 +27,6 @@ export default function Menu() {
     if (!state) navigate("/guest");
   }, [state, navigate]);
 
-  // Fetch menu items from admin's menuItems collection
   useEffect(() => {
     if (!adminId) {
       setLoading(false);
@@ -40,7 +39,6 @@ export default function Menu() {
     setLoading(true);
     setError(null);
 
-    // Try with real-time listener first
     const menuRef = collection(db, "users", adminId, "menuItems");
     const q = query(menuRef);
 
@@ -48,7 +46,7 @@ export default function Menu() {
       q,
       (snapshot) => {
         console.log("📦 Snapshot received, size:", snapshot.size);
-        
+
         if (snapshot.empty) {
           console.log("⚠️ No menu items found");
           setMenuItems([]);
@@ -60,8 +58,7 @@ export default function Menu() {
         snapshot.forEach((doc) => {
           const data = doc.data();
           console.log("📄 Menu item:", doc.id, data);
-          
-          // Only include available items
+
           if (data.isAvailable !== false) {
             items.push({
               id: doc.id,
@@ -78,8 +75,7 @@ export default function Menu() {
         console.error("❌ Firestore error:", err);
         console.error("Error code:", err.code);
         console.error("Error message:", err.message);
-        
-        // Provide helpful error messages
+
         if (err.code === "permission-denied") {
           setError(
             "Permission denied. Please check Firebase security rules. The menu items path must allow public read access."
@@ -97,10 +93,8 @@ export default function Menu() {
     };
   }, [adminId]);
 
-  // Get unique categories from menu items
   const categories = ["all", ...new Set(menuItems.map((item) => item.category).filter(Boolean))];
 
-  // Filter items by category
   const filteredItems =
     selectedCategory === "all"
       ? menuItems
@@ -135,7 +129,7 @@ export default function Menu() {
       alert("Missing admin ID");
       return;
     }
-    
+
     if (Object.keys(cart).length === 0) {
       alert("Your cart is empty!");
       return;
@@ -175,13 +169,13 @@ export default function Menu() {
 
       console.log("✅ Order placed successfully");
       alert("✅ Order placed successfully!");
-      setCart({}); // Clear cart
-      navigate("/dashboard", { state }); // Go back to dashboard with state
+      setCart({});
+      navigate("/dashboard", { state });
     } catch (e) {
       console.error("❌ Error placing order:", e);
       console.error("Error code:", e.code);
       console.error("Error message:", e.message);
-      
+
       if (e.code === "permission-denied") {
         alert("Permission denied. Please check Firebase security rules for foodOrders.");
       } else {
@@ -202,6 +196,8 @@ export default function Menu() {
     return labels[category] || category;
   };
 
+  const totalItems = Object.values(cart).reduce((sum, count) => sum + count, 0);
+
   return (
     <div style={styles.page}>
       {/* Header */}
@@ -213,7 +209,9 @@ export default function Menu() {
           ← Back
         </button>
         <div style={styles.title}>Food Menu</div>
-        <div style={{ width: 40 }} /> {/* Spacer */}
+        <div style={styles.cartBadge}>
+          {totalItems > 0 && <span style={styles.badge}>{totalItems}</span>}
+        </div>
       </div>
 
       {/* Loading State */}
@@ -253,19 +251,21 @@ export default function Menu() {
         <>
           {/* Categories */}
           {menuItems.length > 0 && (
-            <div style={styles.categories}>
-              {categories.map((cat) => (
-                <div
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
-                  style={{
-                    ...styles.categoryTab,
-                    ...(selectedCategory === cat ? styles.categoryTabActive : {}),
-                  }}
-                >
-                  {getCategoryLabel(cat)}
-                </div>
-              ))}
+            <div style={styles.categoriesContainer}>
+              <div style={styles.categories}>
+                {categories.map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => setSelectedCategory(cat)}
+                    style={{
+                      ...styles.categoryTab,
+                      ...(selectedCategory === cat ? styles.categoryTabActive : {}),
+                    }}
+                  >
+                    {getCategoryLabel(cat)}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -279,14 +279,16 @@ export default function Menu() {
             ) : (
               filteredItems.map((item) => (
                 <div key={item.id} style={styles.menuItem}>
-                  <div style={styles.itemInfo}>
-                    <div style={styles.itemName}>{item.name || "Unnamed Item"}</div>
+                  <div style={styles.itemContent}>
+                    <div style={styles.itemHeader}>
+                      <div style={styles.itemName}>{item.name || "Unnamed Item"}</div>
+                      <div style={styles.itemPrice}>
+                        ₹{typeof item.price === "number" ? item.price : "—"}
+                      </div>
+                    </div>
                     {item.description && (
                       <div style={styles.itemDesc}>{item.description}</div>
                     )}
-                    <div style={styles.itemPrice}>
-                      ₹{typeof item.price === "number" ? item.price : "—"}
-                    </div>
                     {item.category && (
                       <div style={styles.categoryBadge}>
                         {getCategoryLabel(item.category)}
@@ -303,7 +305,7 @@ export default function Menu() {
                       }}
                       disabled={!cart[item.id]}
                     >
-                      -
+                      −
                     </button>
                     <span style={styles.quantity}>{cart[item.id] || 0}</span>
                     <button onClick={() => addToCart(item.id)} style={styles.plusBtn}>
@@ -314,33 +316,6 @@ export default function Menu() {
               ))
             )}
           </div>
-
-          {/* Cart Footer */}
-          {totalAmount > 0 && (
-            <div style={styles.footer}>
-              <div style={styles.cartInfo}>
-                <div style={styles.totalRow}>
-                  <span>Total:</span>
-                  <span style={styles.totalValue}>₹{totalAmount}</span>
-                </div>
-                <div style={styles.itemCount}>
-                  {Object.values(cart).reduce((sum, count) => sum + count, 0)}{" "}
-                  items
-                </div>
-              </div>
-              <button
-                onClick={placeOrder}
-                disabled={ordering}
-                style={{
-                  ...styles.orderBtn,
-                  opacity: ordering ? 0.7 : 1,
-                  cursor: ordering ? "not-allowed" : "pointer",
-                }}
-              >
-                {ordering ? "Placing Order..." : "🛒 Place Order"}
-              </button>
-            </div>
-          )}
 
           {/* Empty State */}
           {menuItems.length === 0 && (
@@ -361,6 +336,32 @@ export default function Menu() {
           )}
         </>
       )}
+
+      {/* Cart Footer */}
+      {totalAmount > 0 && (
+        <div style={styles.footer}>
+          <div style={styles.cartInfo}>
+            <div style={styles.cartLeft}>
+              <div style={styles.totalLabel}>Total</div>
+              <div style={styles.totalValue}>₹{totalAmount.toFixed(2)}</div>
+            </div>
+            <div style={styles.itemCount}>
+              {totalItems} {totalItems === 1 ? "item" : "items"}
+            </div>
+          </div>
+          <button
+            onClick={placeOrder}
+            disabled={ordering}
+            style={{
+              ...styles.orderBtn,
+              opacity: ordering ? 0.7 : 1,
+              cursor: ordering ? "not-allowed" : "pointer",
+            }}
+          >
+            {ordering ? "⏳ Placing..." : "🛒 Place Order"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -369,32 +370,63 @@ const styles = {
   page: {
     minHeight: "100vh",
     backgroundColor: "#F9FAFB",
-    padding: 16,
+    padding: "12px 12px",
     fontFamily:
       '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif',
     position: "relative",
     overflowY: "auto",
-    paddingBottom: 120,
+    WebkitTouchCallout: "none",
+    WebkitUserSelect: "none",
+    paddingBottom: totalAmount > 0 ? "140px" : "24px",
   },
+  
   header: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 20,
+    marginBottom: "16px",
+    paddingTop: "8px",
   },
+  
   backBtn: {
     background: "none",
     border: "none",
-    fontSize: 16,
+    fontSize: "16px",
     color: "#2563EB",
-    fontWeight: "bold",
+    fontWeight: "600",
     cursor: "pointer",
-    textDecoration: "underline",
+    padding: "8px",
+    borderRadius: "8px",
+    transition: "background-color 0.2s",
+    WebkitTouchCallout: "none",
   },
+  
   title: {
-    fontSize: 20,
-    fontWeight: "bold",
+    fontSize: "20px",
+    fontWeight: "700",
     textAlign: "center",
+    flex: 1,
+    color: "#111827",
+  },
+  
+  cartBadge: {
+    width: "40px",
+    display: "flex",
+    justifyContent: "flex-end",
+    alignItems: "center",
+  },
+  
+  badge: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#DC2626",
+    color: "#fff",
+    borderRadius: "50%",
+    width: "24px",
+    height: "24px",
+    fontSize: "12px",
+    fontWeight: "700",
   },
 
   loadingState: {
@@ -402,20 +434,24 @@ const styles = {
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 100,
+    marginTop: "100px",
     textAlign: "center",
-    gap: 12,
+    gap: "12px",
   },
+  
   spinner: {
-    fontSize: 48,
+    fontSize: "48px",
+    animation: "spin 2s linear infinite",
   },
+  
   loadingText: {
-    fontSize: 16,
+    fontSize: "16px",
     fontWeight: "600",
     color: "#6B7280",
   },
+  
   loadingSubtext: {
-    fontSize: 14,
+    fontSize: "14px",
     color: "#9CA3AF",
   },
 
@@ -424,172 +460,222 @@ const styles = {
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 60,
+    marginTop: "40px",
     textAlign: "center",
-    gap: 12,
-    padding: 20,
-    maxWidth: 500,
-    margin: "60px auto",
+    gap: "12px",
+    padding: "16px",
   },
+  
   errorIcon: {
-    fontSize: 64,
+    fontSize: "56px",
+    marginBottom: "8px",
   },
+  
   errorText: {
-    fontSize: 20,
-    fontWeight: "bold",
+    fontSize: "18px",
+    fontWeight: "700",
     color: "#DC2626",
-    marginTop: 16,
+    marginTop: "8px",
   },
+  
   errorSubtext: {
-    fontSize: 14,
+    fontSize: "13px",
     color: "#6B7280",
-    lineHeight: 1.5,
-    marginTop: 8,
-    padding: "12px 16px",
+    lineHeight: 1.6,
+    marginTop: "8px",
+    padding: "12px 14px",
     backgroundColor: "#FEE2E2",
-    borderRadius: 8,
+    borderRadius: "8px",
     border: "1px solid #FCA5A5",
-  },
-  errorHelp: {
-    fontSize: 13,
-    color: "#374151",
-    textAlign: "left",
-    marginTop: 16,
-    padding: 16,
-    backgroundColor: "#F3F4F6",
-    borderRadius: 8,
     width: "100%",
   },
+  
+  errorHelp: {
+    fontSize: "12px",
+    color: "#374151",
+    textAlign: "left",
+    marginTop: "12px",
+    padding: "12px",
+    backgroundColor: "#F3F4F6",
+    borderRadius: "8px",
+    width: "100%",
+  },
+  
   errorList: {
     textAlign: "left",
-    marginTop: 8,
-    paddingLeft: 20,
+    marginTop: "8px",
+    paddingLeft: "16px",
+    lineHeight: 1.8,
+    fontSize: "12px",
   },
+  
   retryBtn: {
-    marginTop: 16,
-    padding: "12px 24px",
+    marginTop: "16px",
+    padding: "10px 20px",
     backgroundColor: "#2563EB",
     color: "#fff",
     border: "none",
-    borderRadius: 8,
-    fontSize: 14,
+    borderRadius: "8px",
+    fontSize: "14px",
     fontWeight: "600",
     cursor: "pointer",
+    transition: "background-color 0.2s",
   },
 
+  categoriesContainer: {
+    marginBottom: "16px",
+    paddingBottom: "8px",
+  },
+  
   categories: {
     display: "flex",
-    gap: 8,
-    marginBottom: 16,
-    flexWrap: "wrap",
+    gap: "8px",
+    overflowX: "auto",
+    paddingBottom: "4px",
+    WebkitOverflowScrolling: "touch",
+    scrollBehavior: "smooth",
   },
+  
   categoryTab: {
-    padding: "8px 16px",
-    borderRadius: 20,
+    padding: "8px 14px",
+    borderRadius: "20px",
     backgroundColor: "#fff",
     color: "#6B7280",
     fontWeight: "600",
-    fontSize: 14,
+    fontSize: "13px",
     cursor: "pointer",
     border: "1px solid #E5E7EB",
     transition: "all 0.2s",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+    WebkitTouchCallout: "none",
   },
+  
   categoryTabActive: {
     backgroundColor: "rgba(37, 99, 235, 0.1)",
     color: "#2563EB",
     borderColor: "#2563EB",
-    fontWeight: "bold",
+    fontWeight: "700",
   },
 
   menuList: {
     display: "flex",
     flexDirection: "column",
-    gap: 12,
-    marginBottom: 20,
+    gap: "10px",
+    marginBottom: "20px",
   },
+  
   menuItem: {
     display: "flex",
     justifyContent: "space-between",
-    alignItems: "center",
-    padding: 16,
-    borderRadius: 12,
+    alignItems: "flex-start",
+    padding: "14px",
+    borderRadius: "12px",
     backgroundColor: "#fff",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.05)",
+    boxShadow: "0 1px 4px rgba(0,0,0,0.05)",
     border: "1px solid #E5E7EB",
+    gap: "12px",
+    transition: "box-shadow 0.2s",
   },
-  itemInfo: {
+  
+  itemContent: {
     flex: 1,
     minWidth: 0,
-    marginRight: 12,
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
   },
+  
+  itemHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: "8px",
+  },
+  
   itemName: {
-    fontSize: 16,
-    fontWeight: "bold",
+    fontSize: "15px",
+    fontWeight: "700",
     color: "#111827",
-    marginBottom: 4,
+    flex: 1,
+    lineHeight: 1.3,
   },
+  
   itemDesc: {
-    fontSize: 13,
+    fontSize: "12px",
     color: "#6B7280",
-    marginTop: 4,
-    marginBottom: 6,
     lineHeight: 1.4,
+    marginTop: "2px",
   },
+  
   itemPrice: {
-    fontSize: 15,
+    fontSize: "14px",
     color: "#16A34A",
-    fontWeight: "bold",
-    marginTop: 4,
+    fontWeight: "700",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
   },
+  
   categoryBadge: {
     display: "inline-block",
-    padding: "4px 10px",
-    borderRadius: 12,
+    padding: "4px 8px",
+    borderRadius: "10px",
     backgroundColor: "#F3F4F6",
     color: "#6B7280",
-    fontSize: 11,
+    fontSize: "11px",
     fontWeight: "600",
-    marginTop: 6,
     textTransform: "capitalize",
+    width: "fit-content",
   },
+  
   itemActions: {
     display: "flex",
     alignItems: "center",
-    gap: 8,
+    gap: "6px",
     flexShrink: 0,
   },
+  
   minusBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: "32px",
+    height: "32px",
+    borderRadius: "8px",
     backgroundColor: "rgba(220, 38, 38, 0.1)",
     color: "#DC2626",
     border: "1px solid #DC2626",
-    fontSize: 18,
-    fontWeight: "bold",
+    fontSize: "18px",
+    fontWeight: "700",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+    cursor: "pointer",
+    transition: "all 0.2s",
+    WebkitTouchCallout: "none",
+    padding: 0,
   },
+  
   plusBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: "32px",
+    height: "32px",
+    borderRadius: "8px",
     backgroundColor: "rgba(37, 99, 235, 0.1)",
     color: "#2563EB",
     border: "1px solid #2563EB",
-    fontSize: 18,
-    fontWeight: "bold",
+    fontSize: "18px",
+    fontWeight: "700",
     cursor: "pointer",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+    transition: "all 0.2s",
+    WebkitTouchCallout: "none",
+    padding: 0,
   },
+  
   quantity: {
-    width: 28,
+    width: "28px",
     textAlign: "center",
-    fontWeight: "bold",
-    fontSize: 14,
+    fontWeight: "700",
+    fontSize: "14px",
     color: "#111827",
   },
 
@@ -601,44 +687,60 @@ const styles = {
     backgroundColor: "#fff",
     borderTop: "2px solid #E5E7EB",
     boxShadow: "0 -4px 12px rgba(0,0,0,0.08)",
-    padding: 16,
+    padding: "12px 12px 16px 12px",
     display: "flex",
     flexDirection: "column",
-    gap: 12,
+    gap: "12px",
+    zIndex: 1000,
+    animation: "slideUp 0.3s ease-out",
   },
+  
   cartInfo: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
+    paddingX: "4px",
   },
-  totalRow: {
+  
+  cartLeft: {
     display: "flex",
-    alignItems: "center",
-    gap: 8,
-    fontSize: 16,
-    fontWeight: "bold",
+    flexDirection: "column",
+    gap: "2px",
   },
-  totalValue: {
-    color: "#16A34A",
-    fontSize: 20,
-    fontWeight: "900",
-  },
-  itemCount: {
-    fontSize: 13,
+  
+  totalLabel: {
+    fontSize: "12px",
     color: "#6B7280",
     fontWeight: "600",
   },
+  
+  totalValue: {
+    color: "#16A34A",
+    fontSize: "20px",
+    fontWeight: "900",
+    lineHeight: 1.2,
+  },
+  
+  itemCount: {
+    fontSize: "13px",
+    color: "#6B7280",
+    fontWeight: "600",
+    textAlign: "right",
+  },
+  
   orderBtn: {
     width: "100%",
-    padding: 14,
-    borderRadius: 12,
+    padding: "14px 16px",
+    borderRadius: "10px",
     backgroundColor: "#16A34A",
     color: "#fff",
     border: "none",
-    fontWeight: "bold",
-    fontSize: 16,
+    fontWeight: "700",
+    fontSize: "15px",
     transition: "background-color 0.2s",
     boxShadow: "0 4px 12px rgba(22, 163, 74, 0.25)",
+    cursor: "pointer",
+    WebkitTouchCallout: "none",
   },
 
   emptyState: {
@@ -646,44 +748,48 @@ const styles = {
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 80,
+    marginTop: "80px",
     textAlign: "center",
-    gap: 8,
+    gap: "8px",
+    padding: "20px",
   },
+  
   emptyIcon: {
-    fontSize: 64,
+    fontSize: "56px",
+    marginBottom: "8px",
   },
+  
   emptyText: {
-    fontSize: 18,
-    fontWeight: "bold",
+    fontSize: "17px",
+    fontWeight: "700",
     color: "#6B7280",
-    marginTop: 16,
+    marginTop: "8px",
   },
+  
   emptySubtext: {
-    fontSize: 14,
+    fontSize: "13px",
     color: "#9CA3AF",
-    maxWidth: 300,
-    lineHeight: 1.5,
-    marginTop: 8,
+    lineHeight: 1.6,
+    marginTop: "8px",
   },
+  
   debugInfo: {
-    marginTop: 24,
-    padding: 16,
+    marginTop: "20px",
+    padding: "12px",
     backgroundColor: "#F3F4F6",
-    borderRadius: 8,
+    borderRadius: "8px",
     color: "#374151",
-    fontSize: 12,
+    fontSize: "11px",
     textAlign: "left",
     width: "100%",
-    maxWidth: 300,
-    lineHeight: 1.6,
+    lineHeight: 1.8,
   },
 
   empty: {
     textAlign: "center",
     color: "#6B7280",
-    fontSize: 14,
-    padding: 20,
-    marginTop: 20,
+    fontSize: "14px",
+    padding: "24px 16px",
+    marginTop: "12px",
   },
 };
