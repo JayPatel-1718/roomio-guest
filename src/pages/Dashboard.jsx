@@ -327,12 +327,18 @@ export default function Dashboard() {
       acceptedAtMillis: request.acceptedAt?.toMillis ? request.acceptedAt.toMillis() : null
     });
     
-    if (!request.estimatedTime || !request.acceptedAt) {
-      console.log("Missing estimatedTime or acceptedAt", {
-        estimatedTime: request.estimatedTime,
+    if (!request.estimatedTime) {
+      console.log("Missing estimatedTime", {
+        estimatedTime: request.estimatedTime
+      });
+      return { percentage: 0, remainingMs: request.estimatedTime ? request.estimatedTime * 60 * 1000 : 0 };
+    }
+    
+    if (!request.acceptedAt) {
+      console.log("Missing acceptedAt", {
         acceptedAt: request.acceptedAt
       });
-      return { percentage: 0, remainingMs: 0 };
+      return { percentage: 0, remainingMs: request.estimatedTime * 60 * 1000 };
     }
     
     let acceptedTime;
@@ -489,11 +495,13 @@ export default function Dashboard() {
             acceptedAtType: typeof data.acceptedAt
           });
           
+          const progressData = calculateProgress(data);
           const updatedData = { 
             id, 
             ...data,
-            // Calculate initial progress
-            ...calculateProgress(data)
+            // Ensure progress properties are included
+            percentage: progressData.percentage,
+            remainingMs: progressData.remainingMs
           };
           
           setRequestsMap((prev) => ({
@@ -504,8 +512,12 @@ export default function Dashboard() {
           // Start progress timer for in-progress requests with estimated time
           if (data.status === "in-progress" && 
               data.estimatedTime && 
-              data.acceptedAt &&
-              !timerRefs.current.has(id)) {
+              data.acceptedAt) {
+            
+            // Clear existing timer if any
+            if (timerRefs.current.has(id)) {
+              clearInterval(timerRefs.current.get(id));
+            }
             
             console.log("Starting progress timer for:", id);
             const intervalId = setInterval(() => {
@@ -516,7 +528,8 @@ export default function Dashboard() {
                   ...prev,
                   [id]: {
                     ...prev[id],
-                    ...progress
+                    percentage: progress.percentage,
+                    remainingMs: progress.remainingMs
                   }
                 };
               });
@@ -950,7 +963,8 @@ export default function Dashboard() {
                 {requestsList.map((r) => {
                   const chip = statusChip(r.status);
                   const isInProgress = r.status === "in-progress";
-                  const hasProgress = isInProgress && r.estimatedTime && r.percentage !== undefined;
+                  const hasEstimatedTime = isInProgress && r.estimatedTime;
+                  const hasProgress = hasEstimatedTime && r.percentage !== undefined;
                   
                   console.log("Rendering request:", {
                     id: r.id,
@@ -958,7 +972,8 @@ export default function Dashboard() {
                     type: r.type,
                     estimatedTime: r.estimatedTime,
                     percentage: r.percentage,
-                    hasProgress: hasProgress
+                    hasProgress: hasProgress,
+                    hasEstimatedTime: hasEstimatedTime
                   });
                   
                   return (
@@ -998,6 +1013,20 @@ export default function Dashboard() {
                           <div style={styles.progressSubtext}>
                             Estimated time: {r.estimatedTime} minutes
                             {r.remainingMs > 0 && ` • ${formatTimeForProgress(r.remainingMs)} remaining`}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* ✅ SHOW ESTIMATED TIME IF PENDING ACCEPTANCE */}
+                      {hasEstimatedTime && !hasProgress && (
+                        <div style={styles.progressSection}>
+                          <div style={styles.progressHeader}>
+                            <span style={styles.progressLabel}>
+                              Estimated arrival time
+                            </span>
+                          </div>
+                          <div style={styles.progressSubtext}>
+                            Estimated time: {r.estimatedTime} minutes
                           </div>
                         </div>
                       )}
