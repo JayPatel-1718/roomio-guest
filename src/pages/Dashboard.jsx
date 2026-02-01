@@ -317,9 +317,44 @@ export default function Dashboard() {
 
   // ✅ Calculate progress for accepted/in-progress requests
   const calculateProgress = (request) => {
-    if (!request.estimatedTime || !request.acceptedAt) return { percentage: 0, remainingMs: 0 };
+    // Debug log to see what data we're getting
+    console.log("Calculating progress for:", {
+      id: request.id,
+      status: request.status,
+      estimatedTime: request.estimatedTime,
+      acceptedAt: request.acceptedAt,
+      hasAcceptedAt: !!request.acceptedAt,
+      acceptedAtMillis: request.acceptedAt?.toMillis ? request.acceptedAt.toMillis() : null
+    });
     
-    const acceptedTime = request.acceptedAt?.toDate()?.getTime() || Date.now();
+    if (!request.estimatedTime || !request.acceptedAt) {
+      console.log("Missing estimatedTime or acceptedAt", {
+        estimatedTime: request.estimatedTime,
+        acceptedAt: request.acceptedAt
+      });
+      return { percentage: 0, remainingMs: 0 };
+    }
+    
+    let acceptedTime;
+    
+    // Check if acceptedAt is a Firestore Timestamp
+    if (request.acceptedAt.toMillis) {
+      acceptedTime = request.acceptedAt.toMillis();
+    } 
+    // Check if it's a string timestamp
+    else if (typeof request.acceptedAt === 'string') {
+      acceptedTime = new Date(request.acceptedAt).getTime();
+    }
+    // Check if it's a number
+    else if (typeof request.acceptedAt === 'number') {
+      acceptedTime = request.acceptedAt;
+    }
+    // Fallback to current time
+    else {
+      console.log("Could not parse acceptedAt, using current time");
+      acceptedTime = Date.now();
+    }
+    
     const estimatedMs = request.estimatedTime * 60 * 1000; // Convert minutes to ms
     const endTime = acceptedTime + estimatedMs;
     const now = Date.now();
@@ -332,6 +367,17 @@ export default function Dashboard() {
     const percentage = Math.min(100, (elapsed / estimatedMs) * 100);
     const remainingMs = Math.max(0, endTime - now);
     
+    console.log("Progress calculated:", {
+      acceptedTime,
+      estimatedMs,
+      endTime,
+      now,
+      elapsed,
+      percentage,
+      remainingMs,
+      remainingMinutes: Math.floor(remainingMs / 60000)
+    });
+    
     return { percentage, remainingMs };
   };
 
@@ -340,16 +386,17 @@ export default function Dashboard() {
     const now = Date.now();
     
     Object.values(requestsMap).forEach(request => {
-      if ((request.status === "accepted" || request.status === "in-progress") && 
+      if ((request.status === "in-progress") && 
           !request.arrivalNotified && 
           request.estimatedTime) {
         
-        const acceptedTime = request.acceptedAt?.toDate()?.getTime() || Date.now();
+        const acceptedTime = request.acceptedAt?.toMillis?.() || Date.now();
         const estimatedMs = request.estimatedTime * 60 * 1000;
         const timeUntilArrival = acceptedTime + estimatedMs - now;
         
         // Show notification 2 minutes before arrival
         if (timeUntilArrival > 0 && timeUntilArrival <= 2 * 60 * 1000) {
+          console.log("Showing arrival notification for:", request.id, request.type);
           setArrivalService(request.type || "Service");
           setArrivalRequestId(request.id);
           setShowArrivalNotification(true);
@@ -397,6 +444,8 @@ export default function Dashboard() {
 
   // ✅ Live listeners for requests with progress tracking
   useEffect(() => {
+    console.log("Setting up request listeners for IDs:", requestIds);
+    
     const existing = unsubRef.current;
 
     // cleanup removed listeners
@@ -414,11 +463,14 @@ export default function Dashboard() {
       if (existing.has(id)) return;
 
       const ref = doc(db, "serviceRequests", id);
+      
+      console.log("Setting up listener for request:", id);
 
       const unsub = onSnapshot(
         ref,
         (snap) => {
           if (!snap.exists()) {
+            console.log("Request deleted:", id);
             setRequestsMap((prev) => {
               const copy = { ...prev };
               copy[id] = { id, status: "deleted" };
@@ -427,6 +479,16 @@ export default function Dashboard() {
             return;
           }
           const data = snap.data();
+          console.log("Request data received:", {
+            id,
+            status: data.status,
+            type: data.type,
+            estimatedTime: data.estimatedTime,
+            acceptedAt: data.acceptedAt,
+            hasAcceptedAt: !!data.acceptedAt,
+            acceptedAtType: typeof data.acceptedAt
+          });
+          
           const updatedData = { 
             id, 
             ...data,
@@ -439,11 +501,13 @@ export default function Dashboard() {
             [id]: updatedData,
           }));
           
-          // Start progress timer for accepted/in-progress requests
-          if ((data.status === "accepted" || data.status === "in-progress") && 
+          // Start progress timer for in-progress requests with estimated time
+          if (data.status === "in-progress" && 
               data.estimatedTime && 
+              data.acceptedAt &&
               !timerRefs.current.has(id)) {
             
+            console.log("Starting progress timer for:", id);
             const intervalId = setInterval(() => {
               setRequestsMap(prev => {
                 if (!prev[id]) return prev;
@@ -464,6 +528,7 @@ export default function Dashboard() {
           // Stop timer if request is completed or deleted
           if ((data.status === "completed" || data.status === "deleted") && 
               timerRefs.current.has(id)) {
+            console.log("Stopping timer for:", id);
             clearInterval(timerRefs.current.get(id));
             timerRefs.current.delete(id);
           }
@@ -884,8 +949,17 @@ export default function Dashboard() {
               <div style={styles.reqList}>
                 {requestsList.map((r) => {
                   const chip = statusChip(r.status);
-                  const isAccepted = r.status === "accepted" || r.status === "in-progress";
-                  const hasProgress = isAccepted && r.estimatedTime && r.percentage !== undefined;
+                  const isInProgress = r.status === "in-progress";
+                  const hasProgress = isInProgress && r.estimatedTime && r.percentage !== undefined;
+                  
+                  console.log("Rendering request:", {
+                    id: r.id,
+                    status: r.status,
+                    type: r.type,
+                    estimatedTime: r.estimatedTime,
+                    percentage: r.percentage,
+                    hasProgress: hasProgress
+                  });
                   
                   return (
                     <div key={r.id} style={styles.reqCard}>
@@ -901,7 +975,7 @@ export default function Dashboard() {
                         Room {r.roomNumber ?? safeRoomNumber} • {formatTime(r.createdAt)}
                       </div>
                       
-                      {/* ✅ PROGRESS BAR FOR ACCEPTED REQUESTS */}
+                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS REQUESTS */}
                       {hasProgress && (
                         <div style={styles.progressSection}>
                           <div style={styles.progressHeader}>
@@ -917,7 +991,7 @@ export default function Dashboard() {
                               style={{
                                 ...styles.progressFill,
                                 width: `${r.percentage || 0}%`,
-                                backgroundColor: r.status === "in-progress" ? "#2563EB" : "#16A34A"
+                                backgroundColor: "#2563EB"
                               }}
                             />
                           </div>
@@ -1001,6 +1075,11 @@ function GlobalStyles() {
       .tapCard { transition: transform 120ms ease, box-shadow 120ms ease; }
       .tapCard:hover { box-shadow: 0 10px 22px rgba(17, 24, 39, 0.10); }
       .tapButton:active { transform: scale(0.98); }
+      @keyframes pulse {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.1); }
+        100% { transform: scale(1); }
+      }
     `}</style>
   );
 }
@@ -1235,14 +1314,3 @@ const styles = {
   version: { fontSize: 11, color: "#9CA3AF", fontWeight: 800, letterSpacing: 0.8 },
   versionDivider: { width: 4, height: 4, borderRadius: 2, backgroundColor: "#D1D5DB" },
 };
-
-// Add pulse animation for arrival icon
-const style = document.createElement('style');
-style.textContent = `
-@keyframes pulse {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.1); }
-  100% { transform: scale(1); }
-}
-`;
-document.head.appendChild(style);
