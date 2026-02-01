@@ -61,10 +61,15 @@ export default function Dashboard() {
   const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
   const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
   
-  // ✅ Food order tracking state - NOW TRACKING serviceRequests NOT foodOrders
+  // ✅ Food order tracking state - BOTH collections
   const [foodRequestIds, setFoodRequestIds] = useState([]);
   const [foodRequestsMap, setFoodRequestsMap] = useState({});
   const foodRequestUnsubRef = useRef(null);
+  
+  // ✅ Food orders from menu
+  const [foodOrderIds, setFoodOrderIds] = useState([]);
+  const [foodOrdersMap, setFoodOrdersMap] = useState({});
+  const foodOrderUnsubRef = useRef(null);
   
   // ✅ Timer refs for progress bars
   const timerRefs = useRef(new Map()); // Map<id, intervalId>
@@ -109,6 +114,13 @@ export default function Dashboard() {
     if (!safeMobile || safeMobile === "—") return null;
     if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
     return `roomio:foodRequests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
+  }, [adminId, safeMobile, roomNumberForQuery]);
+
+  const foodOrdersStorageKey = useMemo(() => {
+    if (!adminId) return null;
+    if (!safeMobile || safeMobile === "—") return null;
+    if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
+    return `roomio:foodOrders:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
 
   const laundryCooldownKey = useMemo(() => {
@@ -255,6 +267,33 @@ export default function Dashboard() {
     setFoodRequestIds(next);
   };
 
+  // Load stored food order IDs (from menu)
+  const loadStoredFoodOrderIds = () => {
+    if (!foodOrdersStorageKey) return [];
+    try {
+      const raw = localStorage.getItem(foodOrdersStorageKey);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveStoredFoodOrderIds = (ids) => {
+    if (!foodOrdersStorageKey) return;
+    try {
+      localStorage.setItem(foodOrdersStorageKey, JSON.stringify(ids));
+    } catch {}
+  };
+
+  const addFoodOrderIdToStorage = (id) => {
+    if (!foodOrdersStorageKey) return;
+    const current = loadStoredFoodOrderIds();
+    const next = [id, ...current.filter((x) => x !== id)].slice(0, 30);
+    saveStoredFoodOrderIds(next);
+    setFoodOrderIds(next);
+  };
+
   const clearRequestHistory = () => {
     if (!storageKey) return;
     try {
@@ -267,13 +306,16 @@ export default function Dashboard() {
     timerRefs.current.clear();
   };
 
-  const clearFoodRequestHistory = () => {
-    if (!foodRequestsStorageKey) return;
+  const clearFoodOrderHistory = () => {
+    if (!foodRequestsStorageKey || !foodOrdersStorageKey) return;
     try {
       localStorage.removeItem(foodRequestsStorageKey);
+      localStorage.removeItem(foodOrdersStorageKey);
     } catch {}
     setFoodRequestIds([]);
     setFoodRequestsMap({});
+    setFoodOrderIds([]);
+    setFoodOrdersMap({});
   };
 
   // ✅ Booking query to validate session
@@ -313,9 +355,12 @@ export default function Dashboard() {
     const ids = loadStoredRequestIds();
     setRequestIds(ids);
     
-    const foodIds = loadStoredFoodRequestIds();
-    setFoodRequestIds(foodIds);
-  }, [state, storageKey, foodRequestsStorageKey]);
+    const foodReqIds = loadStoredFoodRequestIds();
+    setFoodRequestIds(foodReqIds);
+    
+    const foodOrderIds = loadStoredFoodOrderIds();
+    setFoodOrderIds(foodOrderIds);
+  }, [state, storageKey, foodRequestsStorageKey, foodOrdersStorageKey]);
 
   // ✅ Laundry cooldown timer
   useEffect(() => {
@@ -733,11 +778,101 @@ export default function Dashboard() {
     };
   }, [adminId, safeMobile, roomNumberForQuery]);
 
+  // ✅ Live listener for FOOD ORDERS from menu
+  useEffect(() => {
+    if (!adminId || !safeMobile || !roomNumberForQuery) return;
+
+    // Listen for food orders from the menu
+    const foodOrdersQuery = query(
+      collection(db, "users", adminId, "foodOrders"),
+      where("guestMobile", "==", safeMobile),
+      where("roomNumber", "==", roomNumberForQuery)
+    );
+
+    // Clean up previous listener
+    if (foodOrderUnsubRef.current) {
+      foodOrderUnsubRef.current();
+    }
+
+    const unsubscribe = onSnapshot(
+      foodOrdersQuery,
+      (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          const order = { id: change.doc.id, ...change.doc.data() };
+          
+          if (change.type === "added" || change.type === "modified") {
+            // Add to storage if this is a new order
+            if (change.type === "added") {
+              addFoodOrderIdToStorage(order.id);
+            }
+            
+            // Update food orders map
+            setFoodOrdersMap(prev => ({
+              ...prev,
+              [order.id]: order
+            }));
+          }
+          
+          if (change.type === "removed") {
+            // Remove from local state
+            setFoodOrdersMap(prev => {
+              const copy = { ...prev };
+              delete copy[order.id];
+              return copy;
+            });
+          }
+        });
+      },
+      (error) => {
+        console.error("Food orders listener error:", error);
+      }
+    );
+
+    foodOrderUnsubRef.current = unsubscribe;
+
+    return () => {
+      if (foodOrderUnsubRef.current) {
+        foodOrderUnsubRef.current();
+      }
+    };
+  }, [adminId, safeMobile, roomNumberForQuery]);
+
   // ✅ Check for arrival notifications periodically
   useEffect(() => {
     const interval = setInterval(checkArrivalNotifications, 30000);
     return () => clearInterval(interval);
   }, [requestsMap]);
+
+  // ✅ Combine all food orders for display
+  const allFoodOrders = useMemo(() => {
+    // Get food orders from menu
+    const menuOrders = foodOrderIds
+      .map((id) => foodOrdersMap[id] || { id, status: "loading", source: "menu" })
+      .filter(order => order.status !== "completed" && order.status !== "cancelled")
+      .map(order => ({
+        ...order,
+        source: "menu",
+        dishName: order.item || "Food Order",
+        createdMs: order?.createdAt?.toMillis?.() ?? 0,
+      }));
+
+    // Get food service requests (from admin tracking)
+    const serviceFoods = foodRequestIds
+      .map((id) => foodRequestsMap[id] || { id, status: "loading", source: "service" })
+      .filter(request => request.type === "Food Order")
+      .map(request => ({
+        ...request,
+        source: "service",
+        dishName: request.dishName || request.type,
+        createdMs: request?.createdAt?.toMillis?.() ?? 0,
+      }));
+
+    // Combine and sort by creation time
+    const combined = [...menuOrders, ...serviceFoods]
+      .sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
+
+    return combined;
+  }, [foodOrderIds, foodOrdersMap, foodRequestIds, foodRequestsMap]);
 
   // ✅ Show session expired message
   if (sessionExpired) {
@@ -895,18 +1030,6 @@ export default function Dashboard() {
 
     return arr;
   }, [requestIds, requestsMap]);
-
-  const foodRequestsList = useMemo(() => {
-    const arr = foodRequestIds
-      .map((id) => foodRequestsMap[id] || { id, status: "loading" })
-      .map((r) => ({
-        ...r,
-        createdMs: r?.createdAt?.toMillis?.() ?? 0,
-      }))
-      .sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
-
-    return arr;
-  }, [foodRequestIds, foodRequestsMap]);
 
   const statusChip = (status) => {
     const s = (status || "pending").toLowerCase();
@@ -1100,8 +1223,8 @@ export default function Dashboard() {
             }}
           >
             Food Orders
-            {foodRequestIds.length ? (
-              <span style={styles.tabBadge}>{foodRequestIds.length}</span>
+            {allFoodOrders.length ? (
+              <span style={styles.tabBadge}>{allFoodOrders.length}</span>
             ) : null}
           </button>
         </div>
@@ -1242,16 +1365,16 @@ export default function Dashboard() {
               </div>
               <button
                 className="tapButton"
-                onClick={clearFoodRequestHistory}
+                onClick={clearFoodOrderHistory}
                 style={styles.clearBtn}
-                disabled={!foodRequestIds.length}
+                disabled={!allFoodOrders.length}
                 title="Clear food order history"
               >
                 Clear
               </button>
             </div>
 
-            {foodRequestIds.length === 0 ? (
+            {allFoodOrders.length === 0 ? (
               <div style={styles.emptyBox}>
                 <div style={styles.emptyTitle}>No food orders yet</div>
                 <div style={styles.emptySub}>
@@ -1260,68 +1383,113 @@ export default function Dashboard() {
               </div>
             ) : (
               <div style={styles.reqList}>
-                {foodRequestsList.map((r) => {
-                  const chip = statusChip(r.status);
-                  const isInProgress = r.status === "in-progress";
-                  const isPending = (r.status || "pending") === "pending";
-                  const isCompleted = r.status === "completed";
-                  const hasEstimatedTime = isInProgress && r.estimatedTime;
-                  const hasProgress = hasEstimatedTime && r.percentage !== undefined;
+                {allFoodOrders.map((order) => {
+                  // Determine status based on source
+                  let status = order.status;
+                  let showProgress = false;
+                  let estimatedTime = order.estimatedTime;
+                  let percentage = order.percentage || 0;
+                  let remainingMs = order.remainingMs || 0;
+                  
+                  // For menu orders that are accepted, check if there's a corresponding service request
+                  if (order.source === "menu" && order.status === "accepted") {
+                    // Look for corresponding service request
+                    const matchingService = Object.values(foodRequestsMap).find(
+                      req => req.foodOrderId === order.id || 
+                      (req.guestMobile === safeMobile && 
+                       req.roomNumber === safeRoomNumber &&
+                       req.dishName === order.item)
+                    );
+                    
+                    if (matchingService) {
+                      status = matchingService.status;
+                      estimatedTime = matchingService.estimatedTime;
+                      percentage = matchingService.percentage || 0;
+                      remainingMs = matchingService.remainingMs || 0;
+                      showProgress = matchingService.status === "in-progress";
+                    }
+                  }
+                  
+                  // For service requests
+                  if (order.source === "service") {
+                    showProgress = order.status === "in-progress" && order.estimatedTime;
+                  }
+                  
+                  const chip = statusChip(status);
+                  const isCompleted = status === "completed";
+                  const isPending = (status || "pending") === "pending";
+                  const isInProgress = status === "in-progress";
+                  const isAccepted = status === "accepted";
                   
                   return (
-                    <div key={r.id} style={styles.reqCard}>
+                    <div key={`${order.source}-${order.id}`} style={styles.reqCard}>
                       <div style={styles.reqTop}>
                         <div style={styles.reqType}>
-                          {r.dishName || "Food Order"}
-                          {r.mealCategory && ` (${r.mealCategory})`}
+                          {order.dishName || "Food Order"}
+                          {order.mealCategory && ` (${order.mealCategory})`}
                         </div>
                         <div style={{ ...styles.reqStatus, backgroundColor: chip.bg, color: chip.text }}>
                           {chip.label}
                         </div>
                       </div>
                       
-                      {r.notes && (
+                      {order.notes && (
                         <div style={styles.reqNotes}>
-                          <strong>Notes:</strong> {r.notes}
+                          <strong>Notes:</strong> {order.notes}
                         </div>
                       )}
                       
                       <div style={styles.reqMeta}>
-                        Room {r.roomNumber ?? safeRoomNumber} • {formatTime(r.createdAt)}
+                        Room {order.roomNumber ?? safeRoomNumber} • 
+                        {order.totalPrice ? ` ₹${order.totalPrice} • ` : " "}
+                        {formatTime(order.createdAt)}
+                        {order.source === "menu" && <span style={{color: "#9CA3AF", fontSize: 10, marginLeft: 6}}>(from menu)</span>}
                       </div>
                       
-                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS FOOD ORDERS (NO BAR FOR PENDING) */}
-                      {hasProgress && !isCompleted && (
+                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS ORDERS */}
+                      {showProgress && !isCompleted && (
                         <div style={styles.progressSection}>
                           <div style={styles.progressHeader}>
                             <span style={styles.progressLabel}>
-                              Ready in {formatTimeForProgress(r.remainingMs || 0)}
+                              {isInProgress ? `Ready in ${formatTimeForProgress(remainingMs)}` : "Preparing..."}
                             </span>
                             <span style={styles.progressPercentage}>
-                              {Math.round(r.percentage || 0)}%
+                              {Math.round(percentage)}%
                             </span>
                           </div>
                           <div style={styles.progressBar}>
                             <div 
                               style={{
                                 ...styles.progressFill,
-                                width: `${r.percentage || 0}%`,
+                                width: `${percentage}%`,
                                 backgroundColor: "#16A34A"
                               }}
                             />
                           </div>
                           <div style={styles.progressSubtext}>
-                            Estimated time: {r.estimatedTime} minutes
-                            {r.remainingMs > 0 && ` • ${formatTimeForProgress(r.remainingMs)} remaining`}
+                            {estimatedTime ? `Estimated time: ${estimatedTime} minutes` : "Time estimation pending"}
+                            {remainingMs > 0 && ` • ${formatTimeForProgress(remainingMs)} remaining`}
                           </div>
                         </div>
                       )}
                       
-                      {/* ✅ PENDING MESSAGE (NO PROGRESS BAR) */}
+                      {/* ✅ PENDING MESSAGE */}
                       {isPending && (
                         <div style={styles.pendingMessage}>
                           <span style={styles.pendingIcon}>⏳</span>
-                          <span style={styles.pendingText}>Your order is pending acceptance</span>
+                          <span style={styles.pendingText}>
+                            {order.source === "menu" 
+                              ? "Order placed, waiting for acceptance" 
+                              : "Your order is pending acceptance"}
+                          </span>
+                        </div>
+                      )}
+                      
+                      {/* ✅ ACCEPTED BUT NOT STARTED */}
+                      {isAccepted && !showProgress && (
+                        <div style={styles.acceptedMessage}>
+                          <span style={styles.acceptedIcon}>✅</span>
+                          <span style={styles.acceptedText}>Order accepted, preparation will start soon</span>
                         </div>
                       )}
                       
@@ -1335,7 +1503,7 @@ export default function Dashboard() {
                       
                       <div style={styles.reqIdRow}>
                         <div style={styles.reqIdLabel}>Order ID</div>
-                        <div style={styles.reqIdValue}>{r.id}</div>
+                        <div style={styles.reqIdValue}>{order.id}</div>
                       </div>
                     </div>
                   );
@@ -1510,6 +1678,27 @@ const styles = {
     fontWeight: 900,
     cursor: "pointer",
     transition: "all 0.2s ease",
+  },
+  
+  // ✅ Accepted Message Styles
+  acceptedMessage: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    border: "1px solid rgba(37, 99, 235, 0.25)",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  acceptedIcon: {
+    fontSize: 16,
+    color: "#2563EB",
+  },
+  acceptedText: {
+    color: "#2563EB",
+    fontWeight: 800,
+    fontSize: 13,
   },
   
   // ✅ Pending Message Styles
@@ -1746,44 +1935,3 @@ const styles = {
   adminText: { minWidth: 0 },
   adminIcon: { width: 38, height: 38, borderRadius: 14, backgroundColor: "rgba(37, 99, 235, 0.08)", display: "flex", alignItems: "center", justifyContent: "center" },
   adminLabel: { fontSize: 11, color: "#6B7280", fontWeight: 800 },
-  adminValue: { fontSize: 13, color: "#111827", fontWeight: 900 },
-  adminRight: { display: "flex", gap: 8, alignItems: "center" },
-  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#16A34A" },
-  statusText: { fontSize: 12, fontWeight: 900, color: "#16A34A" },
-  toast: { marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: "rgba(22, 163, 74, 0.12)", border: "1px solid rgba(22, 163, 74, 0.25)", color: "#16A34A", fontWeight: 900, fontSize: 13, textAlign: "center" },
-  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 10, marginBottom: 10, flexWrap: "wrap" },
-  sectionLeft: { display: "flex", alignItems: "center", gap: 10 },
-  sectionIcon: { width: 30, height: 30, borderRadius: 10, backgroundColor: "#2563EB", display: "flex", alignItems: "center", justifyContent: "center" },
-  sectionTitle: { fontSize: 16, fontWeight: 900, color: "#111827" },
-  clearBtn: { height: 36, padding: "0 12px", borderRadius: 12, border: "1px solid #E5E7EB", backgroundColor: "#fff", color: "#6B7280", fontWeight: 900, cursor: "pointer" },
-  grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
-  serviceCard: { width: "100%", textAlign: "left", padding: 14, borderRadius: 16, border: "1px solid #E5E7EB", backgroundColor: "#fff", boxShadow: "0 6px 18px rgba(17, 24, 39, 0.06)", cursor: "pointer", display: "flex", gap: 12, alignItems: "center", borderLeftWidth: 4, borderLeftStyle: "solid", minWidth: 0 },
-  serviceIconWrap: { width: 44, height: 44, borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center" },
-  serviceIcon: { fontSize: 22 },
-  serviceText: { flex: 1, minWidth: 0 },
-  serviceTitle: { fontSize: 14, fontWeight: 900, color: "#111827" },
-  serviceSubtitle: { fontSize: 12, color: "#6B7280", marginTop: 4 },
-  serviceAction: { display: "flex", alignItems: "center", gap: 6, color: "#2563EB", fontWeight: 900, fontSize: 12 },
-  serviceActionText: { color: "#2563EB" },
-  serviceArrow: { fontSize: 16, marginTop: -1 },
-  emptyBox: { backgroundColor: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, boxShadow: "0 6px 18px rgba(17, 24, 39, 0.06)" },
-  emptyTitle: { fontWeight: 900, color: "#111827" },
-  emptySub: { marginTop: 6, color: "#6B7280", fontWeight: 700, fontSize: 12 },
-  reqList: { display: "grid", gap: 10 },
-  reqCard: { backgroundColor: "#fff", borderRadius: 16, border: "1px solid #E5E7EB", padding: 14, boxShadow: "0 6px 18px rgba(17, 24, 39, 0.06)" },
-  reqTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
-  reqType: { fontWeight: 900, color: "#111827", fontSize: 14 },
-  reqStatus: { padding: "6px 10px", borderRadius: 999, fontWeight: 900, fontSize: 11, letterSpacing: 0.8 },
-  reqMeta: { marginTop: 8, color: "#6B7280", fontWeight: 700, fontSize: 12 },
-  reqIdRow: { marginTop: 10, display: "flex", gap: 6, alignItems: "center" },
-  reqIdLabel: { fontSize: 11, fontWeight: 900, color: "#9CA3AF", letterSpacing: 1.1 },
-  reqIdValue: { fontSize: 11, fontWeight: 900, color: "#2563EB", wordBreak: "break-word" },
-  footer: { marginTop: 16, paddingBottom: 18 },
-  footerRow: { display: "flex", justifyContent: "center", marginBottom: 10 },
-  footerPill: { display: "flex", alignItems: "center", gap: 8, backgroundColor: "rgba(22, 163, 74, 0.10)", padding: "10px 14px", borderRadius: 999 },
-  footerDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#16A34A" },
-  footerText: { fontSize: 12, fontWeight: 800, color: "#16A34A" },
-  versionRow: { display: "flex", justifyContent: "center", gap: 8, alignItems: "center" },
-  version: { fontSize: 11, color: "#9CA3AF", fontWeight: 800, letterSpacing: 0.8 },
-  versionDivider: { width: 4, height: 4, borderRadius: 2, backgroundColor: "#D1D5DB" },
-};
