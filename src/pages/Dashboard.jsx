@@ -13,16 +13,6 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 
-function formatRemaining(ms) {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
-
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m ${s}s`;
-}
-
 function formatTimeForProgress(ms) {
   const totalMinutes = Math.max(0, Math.floor(ms / 60000));
   const minutes = totalMinutes % 60;
@@ -33,7 +23,7 @@ function formatTimeForProgress(ms) {
 }
 
 export default function Dashboard() {
-  const { state } = useLocation();
+  const { state } = useLocation(); 
   const navigate = useNavigate();
 
   const [sending, setSending] = useState(false);
@@ -310,8 +300,8 @@ export default function Dashboard() {
 
   // ✅ Calculate progress for accepted/in-progress requests
   const calculateProgress = (request) => {
-    if (!request.estimatedTime) {
-      return { percentage: 0, remainingMs: request.estimatedTime ? request.estimatedTime * 60 * 1000 : 0 };
+    if (!request?.estimatedTime) {
+      return { percentage: 0, remainingMs: request?.estimatedTime ? request.estimatedTime * 60 * 1000 : 0 };
     }
 
     if (!request.acceptedAt) {
