@@ -62,11 +62,18 @@ export default function Dashboard() {
     housekeeping: 100, // ₹100 for housekeeping
   });
 
+  // ✅ Request Counts for Free Services (first 2 free)
+  const [requestCounts, setRequestCounts] = useState({
+    laundry: 0,
+    housekeeping: 0
+  });
+
   // ✅ Show Charges Modal State
   const [showChargesModal, setShowChargesModal] = useState(false);
   const [selectedService, setSelectedService] = useState("");
   const [selectedServiceCharge, setSelectedServiceCharge] = useState(0);
   const [confirmationInProgress, setConfirmationInProgress] = useState(false);
+  const [freeRequestsUsed, setFreeRequestsUsed] = useState(false);
 
   useEffect(() => {
     if (!state) navigate("/guest");
@@ -101,6 +108,77 @@ export default function Dashboard() {
     if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
     return `roomio:foodRequests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
+
+  const requestCountsKey = useMemo(() => {
+    if (!adminId) return null;
+    if (!safeMobile || safeMobile === "—") return null;
+    if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
+    return `roomio:requestCounts:${adminId}:${safeMobile}:${roomNumberForQuery}`;
+  }, [adminId, safeMobile, roomNumberForQuery]);
+
+  // ✅ Load request counts from localStorage
+  useEffect(() => {
+    if (!requestCountsKey) return;
+    
+    try {
+      const stored = localStorage.getItem(requestCountsKey);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setRequestCounts(parsed);
+        
+        // Check if free requests are used up for any service
+        const anyFreeUsed = Object.values(parsed).some(count => count >= 2);
+        setFreeRequestsUsed(anyFreeUsed);
+      }
+    } catch (error) {
+      console.error("Failed to load request counts:", error);
+    }
+  }, [requestCountsKey]);
+
+  // ✅ Save request counts to localStorage
+  useEffect(() => {
+    if (!requestCountsKey) return;
+    
+    try {
+      localStorage.setItem(requestCountsKey, JSON.stringify(requestCounts));
+      
+      // Update free requests used status
+      const anyFreeUsed = Object.values(requestCounts).some(count => count >= 2);
+      setFreeRequestsUsed(anyFreeUsed);
+    } catch (error) {
+      console.error("Failed to save request counts:", error);
+    }
+  }, [requestCounts, requestCountsKey]);
+
+  // ✅ Helper functions for service charges
+  const shouldChargeForService = (serviceType) => {
+    const serviceKey = serviceType.toLowerCase();
+    return (requestCounts[serviceKey] || 0) >= 2;
+  };
+
+  const getServiceCharge = (serviceType) => {
+    const serviceKey = serviceType.toLowerCase();
+    const count = requestCounts[serviceKey] || 0;
+    
+    if (count < 2) {
+      return 0; // Free for first 2 requests
+    }
+    
+    if (serviceType === "Laundry") return serviceCharges.laundry;
+    if (serviceType === "Housekeeping") return serviceCharges.housekeeping;
+    return 0;
+  };
+
+  const getServiceSubtitle = (serviceType) => {
+    const serviceKey = serviceType.toLowerCase();
+    const count = requestCounts[serviceKey] || 0;
+    const remainingFree = Math.max(0, 2 - count);
+    
+    if (remainingFree > 0) {
+      return `${remainingFree} free remaining, then ₹${serviceCharges[serviceKey]}`;
+    }
+    return `₹${serviceCharges[serviceKey]} per request`;
+  };
 
   // ✅ Session cleanup function
   const cleanupSession = async () => {
@@ -459,9 +537,13 @@ export default function Dashboard() {
       return;
     }
 
-    // Show charges confirmation modal if not already confirmed
-    if (!confirmed) {
-      showChargesConfirmation("Laundry", serviceCharges.laundry);
+    // Check if charges apply
+    const chargeAmount = getServiceCharge("Laundry");
+    const needsCharges = chargeAmount > 0;
+    
+    // Show charges confirmation modal if needed and not already confirmed
+    if (needsCharges && !confirmed) {
+      showChargesConfirmation("Laundry", chargeAmount);
       return;
     }
 
@@ -486,13 +568,21 @@ export default function Dashboard() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         source: "guest-web",
-        charges: serviceCharges.laundry, // Add charges to the request
+        charges: chargeAmount, // Add charges to the request (0 for free requests)
         currency: "INR",
+        isFreeRequest: chargeAmount === 0, // Mark if this was a free request
+        requestNumber: (requestCounts.laundry || 0) + 1, // Track request number
       });
 
       addRequestIdToStorage(docRef.id);
       
-      showToast("✅ Laundry pickup request sent!");
+      // Update laundry request count
+      setRequestCounts(prev => ({
+        ...prev,
+        laundry: (prev.laundry || 0) + 1
+      }));
+      
+      showToast(chargeAmount === 0 ? "✅ Free laundry pickup request sent!" : "✅ Laundry pickup request sent!");
       setActiveTab("requests");
     } catch (err) {
       console.error("Laundry request error:", err);
@@ -515,9 +605,13 @@ export default function Dashboard() {
       return;
     }
 
-    // Show charges confirmation modal if not already confirmed
-    if (!confirmed) {
-      showChargesConfirmation("Housekeeping", serviceCharges.housekeeping);
+    // Check if charges apply
+    const chargeAmount = getServiceCharge("Housekeeping");
+    const needsCharges = chargeAmount > 0;
+    
+    // Show charges confirmation modal if needed and not already confirmed
+    if (needsCharges && !confirmed) {
+      showChargesConfirmation("Housekeeping", chargeAmount);
       return;
     }
 
@@ -542,13 +636,21 @@ export default function Dashboard() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         source: "guest-web",
-        charges: serviceCharges.housekeeping, // Add charges to the request
+        charges: chargeAmount, // Add charges to the request (0 for free requests)
         currency: "INR",
+        isFreeRequest: chargeAmount === 0, // Mark if this was a free request
+        requestNumber: (requestCounts.housekeeping || 0) + 1, // Track request number
       });
 
       addRequestIdToStorage(docRef.id);
 
-      showToast("✅ Housekeeping request sent!");
+      // Update housekeeping request count
+      setRequestCounts(prev => ({
+        ...prev,
+        housekeeping: (prev.housekeeping || 0) + 1
+      }));
+
+      showToast(chargeAmount === 0 ? "✅ Free housekeeping request sent!" : "✅ Housekeeping request sent!");
       setActiveTab("requests");
     } catch (err) {
       console.error("Housekeeping request error:", err);
@@ -730,7 +832,7 @@ export default function Dashboard() {
                 setFoodRequestsMap(prev => {
                   if (!prev[request.id]) return prev;
                   const progress = calculateProgress(prev[request.id]);
-                  return {
+                return {
                     ...prev,
                     [request.id]: {
                       ...prev[request.id],
@@ -883,16 +985,34 @@ export default function Dashboard() {
       {showChargesModal && (
         <div style={styles.chargesOverlay}>
           <div style={styles.chargesModal}>
-            <div style={styles.chargesIcon}>💸</div>
-            <div style={styles.chargesTitle}>Service Charges</div>
+            <div style={styles.chargesIcon}>
+              {selectedServiceCharge === 0 ? "🎁" : "💸"}
+            </div>
+            <div style={styles.chargesTitle}>
+              {selectedServiceCharge === 0 ? "Free Service" : "Service Charges"}
+            </div>
             <div style={styles.chargesMessage}>
-              <strong>{selectedService}</strong> service has an additional charge of
+              {selectedServiceCharge === 0 ? (
+                <>
+                  Your <strong>{selectedService}</strong> service is <strong>FREE</strong> (first 2 requests)
+                </>
+              ) : (
+                <>
+                  You've used your 2 free {selectedService} requests.
+                  <br />
+                  Additional requests cost:
+                </>
+              )}
             </div>
-            <div style={styles.chargesAmount}>
-              ₹{selectedServiceCharge}
-            </div>
+            {selectedServiceCharge > 0 && (
+              <div style={styles.chargesAmount}>
+                ₹{selectedServiceCharge}
+              </div>
+            )}
             <div style={styles.chargesNote}>
-              This charge will be added to your room bill
+              {selectedServiceCharge === 0 
+                ? "This service will not be charged to your room bill"
+                : "This charge will be added to your room bill"}
             </div>
             <div style={styles.chargesActions}>
               <button
@@ -905,11 +1025,14 @@ export default function Dashboard() {
               </button>
               <button
                 onClick={handleServiceConfirmation}
-                style={styles.chargesConfirmBtn}
+                style={{
+                  ...styles.chargesConfirmBtn,
+                  backgroundColor: selectedServiceCharge === 0 ? "#16A34A" : "#F59E0B"
+                }}
                 className="tapButton"
                 disabled={confirmationInProgress}
               >
-                {confirmationInProgress ? "Processing..." : "Confirm & Request"}
+                {confirmationInProgress ? "Processing..." : selectedServiceCharge === 0 ? "Request Free Service" : "Confirm & Request"}
               </button>
             </div>
           </div>
@@ -1098,19 +1221,33 @@ export default function Dashboard() {
             <ServiceCard
               icon="🧺"
               title="Laundry"
-              subtitle={`₹${serviceCharges.laundry} per pickup`}
+              subtitle={getServiceSubtitle("laundry")}
               accent="#2563EB"
               disabled={sending || confirmationInProgress}
-              onClick={() => showChargesConfirmation("Laundry", serviceCharges.laundry)}
+              onClick={() => {
+                const charge = getServiceCharge("Laundry");
+                if (charge > 0) {
+                  showChargesConfirmation("Laundry", charge);
+                } else {
+                  requestLaundryPickup(true); // Skip confirmation for free requests
+                }
+              }}
             />
 
             <ServiceCard
               icon="🧹"
               title="Housekeeping"
-              subtitle={`₹${serviceCharges.housekeeping} per service`}
+              subtitle={getServiceSubtitle("housekeeping")}
               accent="#F59E0B"
               disabled={sending || confirmationInProgress}
-              onClick={() => showChargesConfirmation("Housekeeping", serviceCharges.housekeeping)}
+              onClick={() => {
+                const charge = getServiceCharge("Housekeeping");
+                if (charge > 0) {
+                  showChargesConfirmation("Housekeeping", charge);
+                } else {
+                  requestHousekeeping(true); // Skip confirmation for free requests
+                }
+              }}
             />
           </div>
         ) : null}
@@ -1158,7 +1295,12 @@ export default function Dashboard() {
                       <div style={styles.reqTop}>
                         <div style={styles.reqType}>
                           {r.type || r.serviceType || "Service Request"}
-                          {r.charges && (
+                          {r.isFreeRequest && (
+                            <span style={styles.freeBadge}>
+                              FREE
+                            </span>
+                          )}
+                          {r.charges && r.charges > 0 && (
                             <span style={styles.chargesBadge}>
                               ₹{r.charges}
                             </span>
@@ -1170,6 +1312,7 @@ export default function Dashboard() {
                       </div>
                       <div style={styles.reqMeta}>
                         Room {r.roomNumber ?? safeRoomNumber} • {formatTime(r.createdAt)}
+                        {r.requestNumber && ` • Request #${r.requestNumber}`}
                       </div>
                       
                       {/* ✅ PROGRESS BAR FOR IN-PROGRESS REQUESTS */}
@@ -1431,6 +1574,18 @@ function GlobalStyles() {
 }
 
 const styles = {
+  // ✅ Free Badge Styles
+  freeBadge: {
+    marginLeft: 8,
+    backgroundColor: "rgba(22, 163, 74, 0.15)",
+    color: "#16A34A",
+    padding: "2px 8px",
+    borderRadius: 6,
+    fontSize: 11,
+    fontWeight: 900,
+    border: "1px solid rgba(22, 163, 74, 0.3)",
+  },
+
   // ✅ Charges Confirmation Modal Styles
   chargesOverlay: {
     position: "fixed",
@@ -1453,12 +1608,10 @@ const styles = {
     width: "100%",
     textAlign: "center",
     boxShadow: "0 20px 60px rgba(0, 0, 0, 0.3)",
-    border: "2px solid #F59E0B",
   },
   chargesIcon: {
     fontSize: 60,
     marginBottom: 20,
-    color: "#F59E0B",
   },
   chargesTitle: {
     fontSize: 24,
@@ -1502,7 +1655,6 @@ const styles = {
   },
   chargesConfirmBtn: {
     flex: 1,
-    backgroundColor: "#F59E0B",
     color: "#fff",
     border: "none",
     padding: "16px 24px",
@@ -1516,12 +1668,13 @@ const styles = {
   // ✅ Charges Badge in Request List
   chargesBadge: {
     marginLeft: 8,
-    backgroundColor: "rgba(22, 163, 74, 0.12)",
-    color: "#16A34A",
+    backgroundColor: "rgba(245, 158, 11, 0.15)",
+    color: "#F59E0B",
     padding: "2px 8px",
     borderRadius: 6,
-    fontSize: 12,
-    fontWeight: 800,
+    fontSize: 11,
+    fontWeight: 900,
+    border: "1px solid rgba(245, 158, 11, 0.3)",
   },
 
   // ✅ Tab Row Styles (updated for 3 tabs)
