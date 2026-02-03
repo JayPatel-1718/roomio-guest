@@ -13,9 +13,6 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 
-const LAUNDRY_COOLDOWN_MS = 60 * 60 * 1000; // ✅ 1 hour for laundry
-const HOUSEKEEPING_COOLDOWN_MS = 60 * 60 * 1000; // ✅ 1 hour for housekeeping
-
 function formatRemaining(ms) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(totalSeconds / 3600);
@@ -30,7 +27,7 @@ function formatTimeForProgress(ms) {
   const totalMinutes = Math.max(0, Math.floor(ms / 60000));
   const minutes = totalMinutes % 60;
   const hours = Math.floor(totalMinutes / 60);
-  
+
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
 }
@@ -42,7 +39,7 @@ export default function Dashboard() {
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
   const [sessionExpired, setSessionExpired] = useState(false);
-  
+
   // ✅ Arrival notification modal
   const [showArrivalNotification, setShowArrivalNotification] = useState(false);
   const [arrivalService, setArrivalService] = useState("");
@@ -60,22 +57,26 @@ export default function Dashboard() {
   const [requestIds, setRequestIds] = useState([]);
   const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
   const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
-  
+
   // ✅ Food order tracking state - NOW TRACKING serviceRequests NOT foodOrders
   const [foodRequestIds, setFoodRequestIds] = useState([]);
   const [foodRequestsMap, setFoodRequestsMap] = useState({});
   const foodRequestUnsubRef = useRef(null);
-  
+
   // ✅ Timer refs for progress bars
   const timerRefs = useRef(new Map()); // Map<id, intervalId>
 
-  // ✅ Laundry cooldown state
-  const [laundryBlocked, setLaundryBlocked] = useState(false);
-  const [laundryRemainingMs, setLaundryRemainingMs] = useState(0);
-  
-  // ✅ Housekeeping cooldown state
-  const [housekeepingBlocked, setHousekeepingBlocked] = useState(false);
-  const [housekeepingRemainingMs, setHousekeepingRemainingMs] = useState(0);
+  // ✅ Service Charges State
+  const [serviceCharges, setServiceCharges] = useState({
+    laundry: 150, // ₹150 for laundry
+    housekeeping: 100, // ₹100 for housekeeping
+  });
+
+  // ✅ Show Charges Modal State
+  const [showChargesModal, setShowChargesModal] = useState(false);
+  const [selectedService, setSelectedService] = useState("");
+  const [selectedServiceCharge, setSelectedServiceCharge] = useState(0);
+  const [confirmationInProgress, setConfirmationInProgress] = useState(false);
 
   useEffect(() => {
     if (!state) navigate("/guest");
@@ -111,20 +112,10 @@ export default function Dashboard() {
     return `roomio:foodRequests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
 
-  const laundryCooldownKey = useMemo(() => {
-    if (!storageKey) return null;
-    return `${storageKey}:laundry`;
-  }, [storageKey]);
-
-  const housekeepingCooldownKey = useMemo(() => {
-    if (!storageKey) return null;
-    return `${storageKey}:housekeeping`;
-  }, [storageKey]);
-
   // ✅ Session cleanup function
   const cleanupSession = async () => {
     if (!guestDocId) return;
-    
+
     try {
       await updateDoc(doc(db, "guests", guestDocId), {
         isLoggedIn: false,
@@ -139,7 +130,7 @@ export default function Dashboard() {
   // ✅ Handle logout
   const handleLogout = async () => {
     await cleanupSession();
-    
+
     // Navigate back to guest login
     navigate("/guest", { 
       state: { 
@@ -154,7 +145,7 @@ export default function Dashboard() {
 
     // Listen to the guest document in real-time
     const guestDocRef = doc(db, "guests", guestDocId);
-    
+
     const unsubscribe = onSnapshot(guestDocRef, (snapshot) => {
       if (!snapshot.exists()) {
         // Document deleted (admin checked out)
@@ -312,77 +303,23 @@ export default function Dashboard() {
     if (!state) return;
     const ids = loadStoredRequestIds();
     setRequestIds(ids);
-    
+
     const foodIds = loadStoredFoodRequestIds();
     setFoodRequestIds(foodIds);
   }, [state, storageKey, foodRequestsStorageKey]);
-
-  // ✅ Laundry cooldown timer
-  useEffect(() => {
-    if (!laundryCooldownKey) return;
-
-    const tick = () => {
-      try {
-        const last = Number(localStorage.getItem(laundryCooldownKey) || 0);
-        const nextAllowed = last + LAUNDRY_COOLDOWN_MS;
-        const now = Date.now();
-
-        if (last > 0 && now < nextAllowed) {
-          setLaundryBlocked(true);
-          setLaundryRemainingMs(nextAllowed - now);
-        } else {
-          setLaundryBlocked(false);
-          setLaundryRemainingMs(0);
-        }
-      } catch {
-        setLaundryBlocked(false);
-      }
-    };
-
-    tick();
-    const interval = setInterval(tick, 1000);
-    return () => clearInterval(interval);
-  }, [laundryCooldownKey]);
-
-  // ✅ Housekeeping cooldown timer
-  useEffect(() => {
-    if (!housekeepingCooldownKey) return;
-
-    const tick = () => {
-      try {
-        const last = Number(localStorage.getItem(housekeepingCooldownKey) || 0);
-        const nextAllowed = last + HOUSEKEEPING_COOLDOWN_MS;
-        const now = Date.now();
-
-        if (last > 0 && now < nextAllowed) {
-          setHousekeepingBlocked(true);
-          setHousekeepingRemainingMs(nextAllowed - now);
-        } else {
-          setHousekeepingBlocked(false);
-          setHousekeepingRemainingMs(0);
-        }
-      } catch {
-        setHousekeepingBlocked(false);
-      }
-    };
-
-    tick();
-    const interval = setInterval(tick, 1000);
-    return () => clearInterval(interval);
-  }, [housekeepingCooldownKey]);
 
   // ✅ Calculate progress for accepted/in-progress requests
   const calculateProgress = (request) => {
     if (!request.estimatedTime) {
       return { percentage: 0, remainingMs: request.estimatedTime ? request.estimatedTime * 60 * 1000 : 0 };
     }
-    
+
     if (!request.acceptedAt) {
       return { percentage: 0, remainingMs: request.estimatedTime * 60 * 1000 };
     }
-    
+
     let acceptedTime;
-    
+
     // Check if acceptedAt is a Firestore Timestamp
     if (request.acceptedAt.toMillis) {
       acceptedTime = request.acceptedAt.toMillis();
@@ -399,26 +336,26 @@ export default function Dashboard() {
     else {
       acceptedTime = Date.now();
     }
-    
+
     const estimatedMs = request.estimatedTime * 60 * 1000; // Convert minutes to ms
     const endTime = acceptedTime + estimatedMs;
     const now = Date.now();
-    
+
     if (now >= endTime) {
       return { percentage: 100, remainingMs: 0 };
     }
-    
+
     const elapsed = now - acceptedTime;
     const percentage = Math.min(100, (elapsed / estimatedMs) * 100);
     const remainingMs = Math.max(0, endTime - now);
-    
+
     return { percentage, remainingMs };
   };
 
   // ✅ Check for arrival notifications
   const checkArrivalNotifications = () => {
     const now = Date.now();
-    
+
     Object.values(requestsMap).forEach(request => {
       if ((request.status === "in-progress") && 
           !request.arrivalNotified && 
@@ -444,21 +381,6 @@ export default function Dashboard() {
     });
   };
 
-  // ✅ Check for food order completion notifications
-  const checkFoodOrderNotifications = (request) => {
-    if (request.status === "completed" && !request.completionNotified) {
-      setCompletedService(request.dishName || "Food Order");
-      setCompletedOrderId(request.id);
-      setShowCompletionModal(true);
-      
-      // Mark as notified
-      setFoodRequestsMap(prev => ({
-        ...prev,
-        [request.id]: { ...prev[request.id], completionNotified: true }
-      }));
-    }
-  };
-
   // ✅ Handle arrival notification confirmation
   const handleArrivalConfirm = async () => {
     // Remove the request from local storage
@@ -466,7 +388,7 @@ export default function Dashboard() {
       const updatedIds = requestIds.filter(id => id !== arrivalRequestId);
       saveStoredRequestIds(updatedIds);
       setRequestIds(updatedIds);
-      
+
       // Update Firestore to mark as completed
       try {
         await updateDoc(doc(db, "serviceRequests", arrivalRequestId), {
@@ -484,7 +406,7 @@ export default function Dashboard() {
         timerRefs.current.delete(arrivalRequestId);
       }
     }
-    
+
     setShowArrivalNotification(false);
     setArrivalService("");
     setArrivalRequestId("");
@@ -497,17 +419,153 @@ export default function Dashboard() {
       const updatedIds = foodRequestIds.filter(id => id !== completedOrderId);
       saveStoredFoodRequestIds(updatedIds);
       setFoodRequestIds(updatedIds);
-      
+
       // Clear timer if exists
       if (timerRefs.current.has(`food-${completedOrderId}`)) {
         clearInterval(timerRefs.current.get(`food-${completedOrderId}`));
         timerRefs.current.delete(`food-${completedOrderId}`);
       }
     }
-    
+
     setShowCompletionModal(false);
     setCompletedService("");
     setCompletedOrderId("");
+  };
+
+  // ✅ Show Charges Confirmation Modal
+  const showChargesConfirmation = (service, charge) => {
+    setSelectedService(service);
+    setSelectedServiceCharge(charge);
+    setShowChargesModal(true);
+  };
+
+  // ✅ Handle Service Confirmation
+  const handleServiceConfirmation = async () => {
+    setConfirmationInProgress(true);
+    setShowChargesModal(false);
+    
+    // Call the appropriate service function
+    if (selectedService === "Laundry") {
+      await requestLaundryPickup(true); // Pass true to skip confirmation
+    } else if (selectedService === "Housekeeping") {
+      await requestHousekeeping(true); // Pass true to skip confirmation
+    }
+    
+    setConfirmationInProgress(false);
+    setSelectedService("");
+    setSelectedServiceCharge(0);
+  };
+
+  // ✅ Create Service Request (Laundry)
+  const requestLaundryPickup = async (confirmed = false) => {
+    if (!adminId) {
+      alert("Missing adminId. Please verify again from QR.");
+      return;
+    }
+
+    if (!bookingQuery) {
+      alert("Booking not active. Please verify again.");
+      navigate("/guest");
+      return;
+    }
+
+    // Show charges confirmation modal if not already confirmed
+    if (!confirmed) {
+      showChargesConfirmation("Laundry", serviceCharges.laundry);
+      return;
+    }
+
+    setSending(true);
+    setToast("");
+
+    try {
+      const bookingSnap = await getDocs(bookingQuery);
+      if (bookingSnap.empty) {
+        alert("Your booking is no longer active.");
+        navigate("/guest");
+        return;
+      }
+
+      const docRef = await addDoc(collection(db, "serviceRequests"), {
+        adminId,
+        type: "Laundry Pickup",
+        roomNumber: safeRoomNumber,
+        guestName: safeGuestName,
+        guestMobile: safeMobile,
+        status: "pending",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        source: "guest-web",
+        charges: serviceCharges.laundry, // Add charges to the request
+        currency: "INR",
+      });
+
+      addRequestIdToStorage(docRef.id);
+      
+      showToast("✅ Laundry pickup request sent!");
+      setActiveTab("requests");
+    } catch (err) {
+      console.error("Laundry request error:", err);
+      alert("Failed to send request. Check internet / permissions.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // ✅ Create Service Request (Housekeeping)
+  const requestHousekeeping = async (confirmed = false) => {
+    if (!adminId) {
+      alert("Missing adminId. Please verify again from QR.");
+      return;
+    }
+
+    if (!bookingQuery) {
+      alert("Booking not active. Please verify again.");
+      navigate("/guest");
+      return;
+    }
+
+    // Show charges confirmation modal if not already confirmed
+    if (!confirmed) {
+      showChargesConfirmation("Housekeeping", serviceCharges.housekeeping);
+      return;
+    }
+
+    setSending(true);
+    setToast("");
+
+    try {
+      const bookingSnap = await getDocs(bookingQuery);
+      if (bookingSnap.empty) {
+        alert("Your booking is no longer active.");
+        navigate("/guest");
+        return;
+      }
+
+      const docRef = await addDoc(collection(db, "serviceRequests"), {
+        adminId,
+        type: "Housekeeping",
+        roomNumber: safeRoomNumber,
+        guestName: safeGuestName,
+        guestMobile: safeMobile,
+        status: "pending",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        source: "guest-web",
+        charges: serviceCharges.housekeeping, // Add charges to the request
+        currency: "INR",
+      });
+
+      addRequestIdToStorage(docRef.id);
+
+      showToast("✅ Housekeeping request sent!");
+      setActiveTab("requests");
+    } catch (err) {
+      console.error("Housekeeping request error:", err);
+      alert("Failed to send request. Check internet / permissions.");
+    } finally {
+      setSending(false);
+    }
   };
 
   // ✅ Live listeners for service requests (laundry/housekeeping)
@@ -617,13 +675,12 @@ export default function Dashboard() {
 
   // ✅ Live listener for FOOD service requests (from admin's Tracking.tsx)
   useEffect(() => {
-    if (!adminId || !safeMobile || !roomNumberForQuery) return;
+    if (!adminId || !roomNumberForQuery) return;
 
-    // Listen for service requests that are food orders
+    // Listen for service requests that are food orders for this room
     const foodRequestsQuery = query(
       collection(db, "serviceRequests"),
       where("adminId", "==", adminId),
-      where("guestMobile", "==", safeMobile),
       where("roomNumber", "==", roomNumberForQuery),
       where("type", "==", "Food Order")
     );
@@ -660,7 +717,17 @@ export default function Dashboard() {
             }));
             
             // Check for completion notification
-            checkFoodOrderNotifications(request);
+            if (request.status === "completed" && !request.completionNotified) {
+              setCompletedService(request.dishName || "Food Order");
+              setCompletedOrderId(request.id);
+              setShowCompletionModal(true);
+              
+              // Mark as notified
+              setFoodRequestsMap(prev => ({
+                ...prev,
+                [request.id]: { ...prev[request.id], completionNotified: true }
+              }));
+            }
             
             // Start progress timer for in-progress requests with estimated time
             if (request.status === "in-progress" && request.estimatedTime && request.acceptedAt) {
@@ -731,158 +798,13 @@ export default function Dashboard() {
         }
       });
     };
-  }, [adminId, safeMobile, roomNumberForQuery]);
+  }, [adminId, roomNumberForQuery]);
 
   // ✅ Check for arrival notifications periodically
   useEffect(() => {
     const interval = setInterval(checkArrivalNotifications, 30000);
     return () => clearInterval(interval);
   }, [requestsMap]);
-
-  // ✅ Show session expired message
-  if (sessionExpired) {
-    return (
-      <div style={styles.expiredContainer}>
-        <div style={styles.expiredCard}>
-          <div style={styles.expiredIcon}>🔒</div>
-          <div style={styles.expiredTitle}>Session Expired</div>
-          <div style={styles.expiredMessage}>
-            Someone else logged in with your mobile number.
-          </div>
-          <button
-            onClick={() => navigate("/guest", { state: { admin: safeAdminEmail } })}
-            style={styles.expiredButton}
-          >
-            Back to Login
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!state) return null;
-
-  // ✅ Toast helper
-  const showToast = (msg) => {
-    setToast(msg);
-    setTimeout(() => setToast(""), 2500);
-  };
-
-  // ✅ Create Service Request (Laundry)
-  const requestLaundryPickup = async () => {
-    if (!adminId) {
-      alert("Missing adminId. Please verify again from QR.");
-      return;
-    }
-
-    if (!bookingQuery) {
-      alert("Booking not active. Please verify again.");
-      navigate("/guest");
-      return;
-    }
-
-    if (laundryBlocked) {
-      showToast(`⏳ Available in ${formatRemaining(laundryRemainingMs)}`);
-      return;
-    }
-
-    setSending(true);
-    setToast("");
-
-    try {
-      const bookingSnap = await getDocs(bookingQuery);
-      if (bookingSnap.empty) {
-        alert("Your booking is no longer active.");
-        navigate("/guest");
-        return;
-      }
-
-      const docRef = await addDoc(collection(db, "serviceRequests"), {
-        adminId,
-        type: "Laundry Pickup",
-        roomNumber: safeRoomNumber,
-        guestName: safeGuestName,
-        guestMobile: safeMobile,
-        status: "pending",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        source: "guest-web",
-      });
-
-      addRequestIdToStorage(docRef.id);
-      
-      // Start cooldown
-      if (laundryCooldownKey) {
-        localStorage.setItem(laundryCooldownKey, String(Date.now()));
-      }
-
-      showToast("✅ Laundry pickup request sent!");
-      setActiveTab("requests");
-    } catch (err) {
-      console.error("Laundry request error:", err);
-      alert("Failed to send request. Check internet / permissions.");
-    } finally {
-      setSending(false);
-    }
-  };
-
-  // ✅ Create Service Request (Housekeeping)
-  const requestHousekeeping = async () => {
-    if (!adminId) {
-      alert("Missing adminId. Please verify again from QR.");
-      return;
-    }
-
-    if (!bookingQuery) {
-      alert("Booking not active. Please verify again.");
-      navigate("/guest");
-      return;
-    }
-
-    if (housekeepingBlocked) {
-      showToast(`⏳ Available in ${formatRemaining(housekeepingRemainingMs)}`);
-      return;
-    }
-
-    setSending(true);
-    setToast("");
-
-    try {
-      const bookingSnap = await getDocs(bookingQuery);
-      if (bookingSnap.empty) {
-        alert("Your booking is no longer active.");
-        navigate("/guest");
-        return;
-      }
-
-      const docRef = await addDoc(collection(db, "serviceRequests"), {
-        adminId,
-        type: "Housekeeping",
-        roomNumber: safeRoomNumber,
-        guestName: safeGuestName,
-        guestMobile: safeMobile,
-        status: "pending",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        source: "guest-web",
-      });
-
-      addRequestIdToStorage(docRef.id);
-      
-      // Start cooldown
-      if (housekeepingCooldownKey) {
-        localStorage.setItem(housekeepingCooldownKey, String(Date.now()));
-      }
-
-      showToast("✅ Housekeeping request sent!");
-      setActiveTab("requests");
-    } catch (err) {
-      console.error("Housekeeping request error:", err);
-      alert("Failed to send request. Check internet / permissions.");
-    } finally {
-      setSending(false);
-    }
-  };
 
   const requestsList = useMemo(() => {
     const arr = requestIds
@@ -934,9 +856,75 @@ export default function Dashboard() {
     navigate("/menu", { state });
   };
 
+  // ✅ Show session expired message
+  if (sessionExpired) {
+    return (
+      <div style={styles.expiredContainer}>
+        <div style={styles.expiredCard}>
+          <div style={styles.expiredIcon}>🔒</div>
+          <div style={styles.expiredTitle}>Session Expired</div>
+          <div style={styles.expiredMessage}>
+            Someone else logged in with your mobile number.
+          </div>
+          <button
+            onClick={() => navigate("/guest", { state: { admin: safeAdminEmail } })}
+            style={styles.expiredButton}
+          >
+            Back to Login
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!state) return null;
+
+  // ✅ Toast helper
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 2500);
+  };
+
   return (
     <div style={styles.page} className="safeArea">
       <GlobalStyles />
+
+      {/* ✅ CHARGES CONFIRMATION MODAL */}
+      {showChargesModal && (
+        <div style={styles.chargesOverlay}>
+          <div style={styles.chargesModal}>
+            <div style={styles.chargesIcon}>💸</div>
+            <div style={styles.chargesTitle}>Service Charges</div>
+            <div style={styles.chargesMessage}>
+              <strong>{selectedService}</strong> service has an additional charge of
+            </div>
+            <div style={styles.chargesAmount}>
+              ₹{selectedServiceCharge}
+            </div>
+            <div style={styles.chargesNote}>
+              This charge will be added to your room bill
+            </div>
+            <div style={styles.chargesActions}>
+              <button
+                onClick={() => setShowChargesModal(false)}
+                style={styles.chargesCancelBtn}
+                className="tapButton"
+                disabled={confirmationInProgress}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleServiceConfirmation}
+                style={styles.chargesConfirmBtn}
+                className="tapButton"
+                disabled={confirmationInProgress}
+              >
+                {confirmationInProgress ? "Processing..." : "Confirm & Request"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ✅ ARRIVAL NOTIFICATION MODAL */}
       {showArrivalNotification && (
@@ -1119,20 +1107,20 @@ export default function Dashboard() {
 
             <ServiceCard
               icon="🧺"
-              title={laundryBlocked ? "Cooldown" : "Laundry"}
-              subtitle={laundryBlocked ? formatRemaining(laundryRemainingMs) : "Pickup & delivery"}
+              title="Laundry"
+              subtitle={`₹${serviceCharges.laundry} per pickup`}
               accent="#2563EB"
-              disabled={sending || laundryBlocked}
-              onClick={requestLaundryPickup}
+              disabled={sending || confirmationInProgress}
+              onClick={() => showChargesConfirmation("Laundry", serviceCharges.laundry)}
             />
 
             <ServiceCard
               icon="🧹"
-              title={housekeepingBlocked ? "Cooldown" : "Housekeeping"}
-              subtitle={housekeepingBlocked ? formatRemaining(housekeepingRemainingMs) : "Room cleaning"}
+              title="Housekeeping"
+              subtitle={`₹${serviceCharges.housekeeping} per service`}
               accent="#F59E0B"
-              disabled={sending || housekeepingBlocked}
-              onClick={requestHousekeeping}
+              disabled={sending || confirmationInProgress}
+              onClick={() => showChargesConfirmation("Housekeeping", serviceCharges.housekeeping)}
             />
           </div>
         ) : null}
@@ -1180,6 +1168,11 @@ export default function Dashboard() {
                       <div style={styles.reqTop}>
                         <div style={styles.reqType}>
                           {r.type || r.serviceType || "Service Request"}
+                          {r.charges && (
+                            <span style={styles.chargesBadge}>
+                              ₹{r.charges}
+                            </span>
+                          )}
                         </div>
                         <div style={{ ...styles.reqStatus, backgroundColor: chip.bg, color: chip.text }}>
                           {chip.label}
@@ -1387,7 +1380,7 @@ function ServiceCard({ icon, title, subtitle, accent, onClick, disabled }) {
         <div style={styles.serviceSubtitle}>{subtitle}</div>
       </div>
       <div style={styles.serviceAction}>
-        <span style={styles.serviceActionText}>Open</span>
+        <span style={styles.serviceActionText}>Request</span>
         <span style={styles.serviceArrow}>→</span>
       </div>
     </button>
@@ -1397,15 +1390,47 @@ function ServiceCard({ icon, title, subtitle, accent, onClick, disabled }) {
 function GlobalStyles() {
   return (
     <style>{`
-      :root{ --sat: env(safe-area-inset-top, 0px); --sar: env(safe-area-inset-right, 0px); --sab: env(safe-area-inset-bottom, 0px); --sal: env(safe-area-inset-left, 0px); }
-      html, body { margin: 0; padding: 0; background: #F9FAFB; }
-      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-      .safeArea { padding-top: calc(16px + var(--sat)); padding-left: calc(16px + var(--sal)); padding-right: calc(16px + var(--sar)); padding-bottom: calc(16px + var(--sab)); }
-      @media (max-width: 520px) { .pillsRow { grid-template-columns: 1fr !important; } .servicesGrid { grid-template-columns: 1fr !important; } }
-      .tapCard:active { transform: scale(0.99); }
-      .tapCard { transition: transform 120ms ease, box-shadow 120ms ease; }
-      .tapCard:hover { box-shadow: 0 10px 22px rgba(17, 24, 39, 0.10); }
-      .tapButton:active { transform: scale(0.98); }
+      :root{
+        --sat: env(safe-area-inset-top, 0px);
+        --sar: env(safe-area-inset-right, 0px);
+        --sab: env(safe-area-inset-bottom, 0px);
+        --sal: env(safe-area-inset-left, 0px);
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #F9FAFB;
+      }
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .safeArea {
+        padding-top: calc(16px + var(--sat));
+        padding-left: calc(16px + var(--sal));
+        padding-right: calc(16px + var(--sar));
+        padding-bottom: calc(16px + var(--sab));
+      }
+      @media (max-width: 520px) {
+        .pillsRow {
+          grid-template-columns: 1fr !important;
+        }
+        .servicesGrid {
+          grid-template-columns: 1fr !important;
+        }
+      }
+      .tapCard:active {
+        transform: scale(0.99);
+      }
+      .tapCard {
+        transition: transform 120ms ease, box-shadow 120ms ease;
+      }
+      .tapCard:hover {
+        box-shadow: 0 10px 22px rgba(17, 24, 39, 0.10);
+      }
+      .tapButton:active {
+        transform: scale(0.98);
+      }
       @keyframes pulse {
         0% { transform: scale(1); }
         50% { transform: scale(1.1); }
@@ -1416,6 +1441,99 @@ function GlobalStyles() {
 }
 
 const styles = {
+  // ✅ Charges Confirmation Modal Styles
+  chargesOverlay: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 9999,
+    padding: 20,
+  },
+  chargesModal: {
+    backgroundColor: "#fff",
+    borderRadius: 24,
+    padding: 30,
+    maxWidth: 400,
+    width: "100%",
+    textAlign: "center",
+    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.3)",
+    border: "2px solid #F59E0B",
+  },
+  chargesIcon: {
+    fontSize: 60,
+    marginBottom: 20,
+    color: "#F59E0B",
+  },
+  chargesTitle: {
+    fontSize: 24,
+    fontWeight: 900,
+    color: "#111827",
+    marginBottom: 12,
+  },
+  chargesMessage: {
+    fontSize: 16,
+    color: "#6B7280",
+    marginBottom: 16,
+    lineHeight: 1.5,
+  },
+  chargesAmount: {
+    fontSize: 42,
+    fontWeight: 900,
+    color: "#F59E0B",
+    marginBottom: 16,
+  },
+  chargesNote: {
+    fontSize: 14,
+    color: "#9CA3AF",
+    marginBottom: 24,
+    fontStyle: "italic",
+  },
+  chargesActions: {
+    display: "flex",
+    gap: 12,
+  },
+  chargesCancelBtn: {
+    flex: 1,
+    backgroundColor: "#fff",
+    color: "#6B7280",
+    border: "2px solid #E5E7EB",
+    padding: "16px 24px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    transition: "all 0.2s ease",
+  },
+  chargesConfirmBtn: {
+    flex: 1,
+    backgroundColor: "#F59E0B",
+    color: "#fff",
+    border: "none",
+    padding: "16px 24px",
+    borderRadius: 14,
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: "pointer",
+    transition: "all 0.2s ease",
+  },
+
+  // ✅ Charges Badge in Request List
+  chargesBadge: {
+    marginLeft: 8,
+    backgroundColor: "rgba(22, 163, 74, 0.12)",
+    color: "#16A34A",
+    padding: "2px 8px",
+    borderRadius: 6,
+    fontSize: 12,
+    fontWeight: 800,
+  },
+
   // ✅ Tab Row Styles (updated for 3 tabs)
   tabRow: {
     display: "grid",
@@ -1453,7 +1571,7 @@ const styles = {
     fontSize: 12,
     fontWeight: 900,
   },
-  
+
   // ✅ Completion Notification Styles
   completionOverlay: {
     position: "fixed",
@@ -1511,7 +1629,7 @@ const styles = {
     cursor: "pointer",
     transition: "all 0.2s ease",
   },
-  
+
   // ✅ Pending Message Styles
   pendingMessage: {
     marginTop: 12,
@@ -1532,7 +1650,7 @@ const styles = {
     fontWeight: 800,
     fontSize: 13,
   },
-  
+
   // ✅ Completed Message Styles
   completedMessage: {
     marginTop: 12,
@@ -1553,7 +1671,7 @@ const styles = {
     fontWeight: 800,
     fontSize: 13,
   },
-  
+
   // ✅ Notes Styles
   reqNotes: {
     marginTop: 8,
@@ -1564,7 +1682,7 @@ const styles = {
     color: "#6B7280",
     borderLeft: "3px solid #F59E0B",
   },
-  
+
   // ✅ Arrival Notification Styles
   arrivalOverlay: {
     position: "fixed",
@@ -1622,7 +1740,7 @@ const styles = {
     cursor: "pointer",
     transition: "all 0.2s ease",
   },
-  
+
   // ✅ Progress Bar Styles
   progressSection: {
     marginTop: 16,
@@ -1664,7 +1782,7 @@ const styles = {
     color: "#6B7280",
     fontWeight: 700,
   },
-  
+
   expiredContainer: {
     minHeight: "100vh",
     backgroundColor: "#F9FAFB",
@@ -1738,6 +1856,7 @@ const styles = {
   pillIconWrapBlue: { width: 40, height: 40, borderRadius: 14, backgroundColor: "rgba(37, 99, 235, 0.10)", display: "flex", alignItems: "center", justifyContent: "center" },
   pillIconWrapGreen: { width: 40, height: 40, borderRadius: 14, backgroundColor: "rgba(22, 163, 74, 0.10)", display: "flex", alignItems: "center", justifyContent: "center" },
   pillIcon: { fontSize: 18 },
+  pillText: { minWidth: 0 },
   pillLabel: { fontSize: 11, fontWeight: 800, color: "#6B7280" },
   pillValue: { fontSize: 13, fontWeight: 900, color: "#111827", marginTop: 2 },
   pillValueGreen: { fontSize: 13, fontWeight: 900, color: "#16A34A", marginTop: 2 },
