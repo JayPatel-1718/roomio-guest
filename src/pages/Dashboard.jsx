@@ -41,17 +41,17 @@ export default function Dashboard() {
   const [completedOrderId, setCompletedOrderId] = useState("");
 
   // ✅ Tabs
-  const [activeTab, setActiveTab] = useState("services"); // "services" | "requests" | "food"
+  const [activeTab, setActiveTab] = useState("services"); // "services" | "requests" | "orders"
 
   // ✅ Request tracking state
   const [requestIds, setRequestIds] = useState([]);
   const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
   const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
 
-  // ✅ Food order tracking state - NOW TRACKING serviceRequests NOT foodOrders
-  const [foodRequestIds, setFoodRequestIds] = useState([]);
-  const [foodRequestsMap, setFoodRequestsMap] = useState({});
-  const foodRequestUnsubRef = useRef(null);
+  // ✅ Food Order tracking state - TRACKING ORDERS FROM ADMIN
+  const [orderIds, setOrderIds] = useState([]);
+  const [ordersMap, setOrdersMap] = useState({});
+  const ordersUnsubRef = useRef(null);
 
   // ✅ Timer refs for progress bars
   const timerRefs = useRef(new Map()); // Map<id, intervalId>
@@ -102,11 +102,11 @@ export default function Dashboard() {
     return `roomio:requests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
 
-  const foodRequestsStorageKey = useMemo(() => {
+  const ordersStorageKey = useMemo(() => {
     if (!adminId) return null;
     if (!safeMobile || safeMobile === "—") return null;
     if (roomNumberForQuery === null || roomNumberForQuery === "—") return null;
-    return `roomio:foodRequests:${adminId}:${safeMobile}:${roomNumberForQuery}`;
+    return `roomio:orders:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
 
   const requestCountsKey = useMemo(() => {
@@ -287,11 +287,11 @@ export default function Dashboard() {
     setRequestIds(next);
   };
 
-  // Load stored food request IDs (from serviceRequests)
-  const loadStoredFoodRequestIds = () => {
-    if (!foodRequestsStorageKey) return [];
+  // Load stored order IDs (from orders collection)
+  const loadStoredOrderIds = () => {
+    if (!ordersStorageKey) return [];
     try {
-      const raw = localStorage.getItem(foodRequestsStorageKey);
+      const raw = localStorage.getItem(ordersStorageKey);
       const arr = raw ? JSON.parse(raw) : [];
       return Array.isArray(arr) ? arr : [];
     } catch {
@@ -299,19 +299,19 @@ export default function Dashboard() {
     }
   };
 
-  const saveStoredFoodRequestIds = (ids) => {
-    if (!foodRequestsStorageKey) return;
+  const saveStoredOrderIds = (ids) => {
+    if (!ordersStorageKey) return;
     try {
-      localStorage.setItem(foodRequestsStorageKey, JSON.stringify(ids));
+      localStorage.setItem(ordersStorageKey, JSON.stringify(ids));
     } catch {}
   };
 
-  const addFoodRequestIdToStorage = (id) => {
-    if (!foodRequestsStorageKey) return;
-    const current = loadStoredFoodRequestIds();
+  const addOrderIdToStorage = (id) => {
+    if (!ordersStorageKey) return;
+    const current = loadStoredOrderIds();
     const next = [id, ...current.filter((x) => x !== id)].slice(0, 30);
-    saveStoredFoodRequestIds(next);
-    setFoodRequestIds(next);
+    saveStoredOrderIds(next);
+    setOrderIds(next);
   };
 
   const clearRequestHistory = () => {
@@ -326,13 +326,13 @@ export default function Dashboard() {
     timerRefs.current.clear();
   };
 
-  const clearFoodRequestHistory = () => {
-    if (!foodRequestsStorageKey) return;
+  const clearOrderHistory = () => {
+    if (!ordersStorageKey) return;
     try {
-      localStorage.removeItem(foodRequestsStorageKey);
+      localStorage.removeItem(ordersStorageKey);
     } catch {}
-    setFoodRequestIds([]);
-    setFoodRequestsMap({});
+    setOrderIds([]);
+    setOrdersMap({});
   };
 
   // ✅ Booking query to validate session
@@ -372,9 +372,9 @@ export default function Dashboard() {
     const ids = loadStoredRequestIds();
     setRequestIds(ids);
 
-    const foodIds = loadStoredFoodRequestIds();
-    setFoodRequestIds(foodIds);
-  }, [state, storageKey, foodRequestsStorageKey]);
+    const orderIds = loadStoredOrderIds();
+    setOrderIds(orderIds);
+  }, [state, storageKey, ordersStorageKey]);
 
   // ✅ Calculate progress for accepted/in-progress requests
   const calculateProgress = (request) => {
@@ -483,15 +483,15 @@ export default function Dashboard() {
   // ✅ Handle completion notification confirmation
   const handleCompletionConfirm = () => {
     if (completedOrderId) {
-      // Remove the request from local storage
-      const updatedIds = foodRequestIds.filter(id => id !== completedOrderId);
-      saveStoredFoodRequestIds(updatedIds);
-      setFoodRequestIds(updatedIds);
+      // Remove the order from local storage
+      const updatedIds = orderIds.filter(id => id !== completedOrderId);
+      saveStoredOrderIds(updatedIds);
+      setOrderIds(updatedIds);
 
       // Clear timer if exists
-      if (timerRefs.current.has(`food-${completedOrderId}`)) {
-        clearInterval(timerRefs.current.get(`food-${completedOrderId}`));
-        timerRefs.current.delete(`food-${completedOrderId}`);
+      if (timerRefs.current.has(`order-${completedOrderId}`)) {
+        clearInterval(timerRefs.current.get(`order-${completedOrderId}`));
+        timerRefs.current.delete(`order-${completedOrderId}`);
       }
     }
 
@@ -765,77 +765,77 @@ export default function Dashboard() {
     };
   }, [requestIds]);
 
-  // ✅ Live listener for FOOD service requests (from admin's Tracking.tsx)
+  // ✅ LIVE LISTENER FOR ORDERS (from admin Tracking.tsx)
   useEffect(() => {
     if (!adminId || !roomNumberForQuery) return;
 
-    // Listen for service requests that are food orders for this room
-    const foodRequestsQuery = query(
-      collection(db, "serviceRequests"),
+    // Listen for orders for this specific room from admin's Tracking.tsx
+    const ordersQuery = query(
+      collection(db, "orders"),
       where("adminId", "==", adminId),
       where("roomNumber", "==", roomNumberForQuery),
-      where("type", "==", "Food Order")
+      where("guestMobile", "==", safeMobile)
     );
 
     // Clean up previous listener
-    if (foodRequestUnsubRef.current) {
-      foodRequestUnsubRef.current();
+    if (ordersUnsubRef.current) {
+      ordersUnsubRef.current();
     }
 
     const unsubscribe = onSnapshot(
-      foodRequestsQuery,
+      ordersQuery,
       (snapshot) => {
         snapshot.docChanges().forEach((change) => {
-          const request = { id: change.doc.id, ...change.doc.data() };
+          const order = { id: change.doc.id, ...change.doc.data() };
           
           if (change.type === "added" || change.type === "modified") {
-            // Add to storage if this is a new request
+            // Add to storage if this is a new order
             if (change.type === "added") {
-              addFoodRequestIdToStorage(request.id);
+              addOrderIdToStorage(order.id);
             }
             
             // Calculate progress
-            const progressData = calculateProgress(request);
-            const updatedRequest = {
-              ...request,
+            const progressData = calculateProgress(order);
+            const updatedOrder = {
+              ...order,
               percentage: progressData.percentage,
               remainingMs: progressData.remainingMs
             };
             
-            // Update food requests map
-            setFoodRequestsMap(prev => ({
+            // Update orders map
+            setOrdersMap(prev => ({
               ...prev,
-              [request.id]: updatedRequest
+              [order.id]: updatedOrder
             }));
             
             // Check for completion notification
-            if (request.status === "completed" && !request.completionNotified) {
-              setCompletedService(request.dishName || "Food Order");
-              setCompletedOrderId(request.id);
+            if (order.status === "completed" && !order.completionNotified) {
+              setCompletedService(order.dishName || "Food Order");
+              setCompletedOrderId(order.id);
               setShowCompletionModal(true);
               
               // Mark as notified
-              setFoodRequestsMap(prev => ({
+              setOrdersMap(prev => ({
                 ...prev,
-                [request.id]: { ...prev[request.id], completionNotified: true }
+                [order.id]: { ...prev[order.id], completionNotified: true }
               }));
             }
             
-            // Start progress timer for in-progress requests with estimated time
-            if (request.status === "in-progress" && request.estimatedTime && request.acceptedAt) {
+            // Start progress timer for in-progress orders with estimated time
+            if (order.status === "in-progress" && order.estimatedTime && order.acceptedAt) {
               // Clear existing timer if any
-              if (timerRefs.current.has(`food-${request.id}`)) {
-                clearInterval(timerRefs.current.get(`food-${request.id}`));
+              if (timerRefs.current.has(`order-${order.id}`)) {
+                clearInterval(timerRefs.current.get(`order-${order.id}`));
               }
               
               const intervalId = setInterval(() => {
-                setFoodRequestsMap(prev => {
-                  if (!prev[request.id]) return prev;
-                  const progress = calculateProgress(prev[request.id]);
+                setOrdersMap(prev => {
+                  if (!prev[order.id]) return prev;
+                  const progress = calculateProgress(prev[order.id]);
                 return {
                     ...prev,
-                    [request.id]: {
-                      ...prev[request.id],
+                    [order.id]: {
+                      ...prev[order.id],
                       percentage: progress.percentage,
                       remainingMs: progress.remainingMs
                     }
@@ -843,54 +843,54 @@ export default function Dashboard() {
                 });
               }, 1000);
               
-              timerRefs.current.set(`food-${request.id}`, intervalId);
+              timerRefs.current.set(`order-${order.id}`, intervalId);
             }
             
-            // Stop timer if request is completed or cancelled
-            if ((request.status === "completed" || request.status === "cancelled") && 
-                timerRefs.current.has(`food-${request.id}`)) {
-              clearInterval(timerRefs.current.get(`food-${request.id}`));
-              timerRefs.current.delete(`food-${request.id}`);
+            // Stop timer if order is completed or cancelled
+            if ((order.status === "completed" || order.status === "cancelled") && 
+                timerRefs.current.has(`order-${order.id}`)) {
+              clearInterval(timerRefs.current.get(`order-${order.id}`));
+              timerRefs.current.delete(`order-${order.id}`);
             }
           }
           
           if (change.type === "removed") {
             // Remove from local state
-            setFoodRequestsMap(prev => {
+            setOrdersMap(prev => {
               const copy = { ...prev };
-              delete copy[request.id];
+              delete copy[order.id];
               return copy;
             });
             
             // Clear timer if exists
-            if (timerRefs.current.has(`food-${request.id}`)) {
-              clearInterval(timerRefs.current.get(`food-${request.id}`));
-              timerRefs.current.delete(`food-${request.id}`);
+            if (timerRefs.current.has(`order-${order.id}`)) {
+              clearInterval(timerRefs.current.get(`order-${order.id}`));
+              timerRefs.current.delete(`order-${order.id}`);
             }
           }
         });
       },
       (error) => {
-        console.error("Food service requests listener error:", error);
+        console.error("Orders listener error:", error);
       }
     );
 
-    foodRequestUnsubRef.current = unsubscribe;
+    ordersUnsubRef.current = unsubscribe;
 
     return () => {
-      if (foodRequestUnsubRef.current) {
-        foodRequestUnsubRef.current();
+      if (ordersUnsubRef.current) {
+        ordersUnsubRef.current();
       }
       
-      // Clear food request timers
+      // Clear order timers
       timerRefs.current.forEach((intervalId, key) => {
-        if (key.startsWith('food-')) {
+        if (key.startsWith('order-')) {
           clearInterval(intervalId);
           timerRefs.current.delete(key);
         }
       });
     };
-  }, [adminId, roomNumberForQuery]);
+  }, [adminId, roomNumberForQuery, safeMobile]);
 
   // ✅ Check for arrival notifications periodically
   useEffect(() => {
@@ -910,9 +910,9 @@ export default function Dashboard() {
     return arr;
   }, [requestIds, requestsMap]);
 
-  const foodRequestsList = useMemo(() => {
-    const arr = foodRequestIds
-      .map((id) => foodRequestsMap[id] || { id, status: "loading" })
+  const ordersList = useMemo(() => {
+    const arr = orderIds
+      .map((id) => ordersMap[id] || { id, status: "loading" })
       .map((r) => ({
         ...r,
         createdMs: r?.createdAt?.toMillis?.() ?? 0,
@@ -920,7 +920,7 @@ export default function Dashboard() {
       .sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0));
 
     return arr;
-  }, [foodRequestIds, foodRequestsMap]);
+  }, [orderIds, ordersMap]);
 
   const statusChip = (status) => {
     const s = (status || "pending").toLowerCase();
@@ -1194,15 +1194,15 @@ export default function Dashboard() {
           </button>
           <button
             className="tapButton"
-            onClick={() => setActiveTab("food")}
+            onClick={() => setActiveTab("orders")}
             style={{
               ...styles.tabBtn,
-              ...(activeTab === "food" ? styles.tabBtnActive : null),
+              ...(activeTab === "orders" ? styles.tabBtnActive : null),
             }}
           >
-            Food Orders
-            {foodRequestIds.length ? (
-              <span style={styles.tabBadge}>{foodRequestIds.length}</span>
+            Orders
+            {orderIds.length ? (
+              <span style={styles.tabBadge}>{orderIds.length}</span>
             ) : null}
           </button>
         </div>
@@ -1354,7 +1354,7 @@ export default function Dashboard() {
           </>
         ) : null}
 
-        {activeTab === "food" ? (
+        {activeTab === "orders" ? (
           <>
             <div style={styles.sectionHeader}>
               <div style={styles.sectionLeft}>
@@ -1368,25 +1368,25 @@ export default function Dashboard() {
               </div>
               <button
                 className="tapButton"
-                onClick={clearFoodRequestHistory}
+                onClick={clearOrderHistory}
                 style={styles.clearBtn}
-                disabled={!foodRequestIds.length}
-                title="Clear food order history"
+                disabled={!orderIds.length}
+                title="Clear order history"
               >
                 Clear
               </button>
             </div>
 
-            {foodRequestIds.length === 0 ? (
+            {orderIds.length === 0 ? (
               <div style={styles.emptyBox}>
                 <div style={styles.emptyTitle}>No food orders yet</div>
                 <div style={styles.emptySub}>
-                  Order food from the menu and track it here in real-time.
+                  Orders placed by admin will appear here automatically.
                 </div>
               </div>
             ) : (
               <div style={styles.reqList}>
-                {foodRequestsList.map((r) => {
+                {ordersList.map((r) => {
                   const chip = statusChip(r.status);
                   const isInProgress = r.status === "in-progress";
                   const isPending = (r.status || "pending") === "pending";
@@ -1414,9 +1414,11 @@ export default function Dashboard() {
                       
                       <div style={styles.reqMeta}>
                         Room {r.roomNumber ?? safeRoomNumber} • {formatTime(r.createdAt)}
+                        {r.quantity && ` • Qty: ${r.quantity}`}
+                        {r.price && ` • ₹${r.price}`}
                       </div>
                       
-                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS FOOD ORDERS (NO BAR FOR PENDING) */}
+                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS ORDERS */}
                       {hasProgress && !isCompleted && (
                         <div style={styles.progressSection}>
                           <div style={styles.progressHeader}>
@@ -1443,7 +1445,7 @@ export default function Dashboard() {
                         </div>
                       )}
                       
-                      {/* ✅ PENDING MESSAGE (NO PROGRESS BAR) */}
+                      {/* ✅ PENDING MESSAGE */}
                       {isPending && (
                         <div style={styles.pendingMessage}>
                           <span style={styles.pendingIcon}>⏳</span>
