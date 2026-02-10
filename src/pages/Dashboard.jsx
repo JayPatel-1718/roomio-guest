@@ -48,7 +48,7 @@ export default function Dashboard() {
   const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
   const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
 
-  // ✅ Food Order tracking state - TRACKING ORDERS FROM ADMIN
+  // ✅ Food Order tracking state - UPDATED: Will listen to foodOrders collection
   const [orderIds, setOrderIds] = useState([]);
   const [ordersMap, setOrdersMap] = useState({});
   const ordersUnsubRef = useRef(null);
@@ -287,7 +287,7 @@ export default function Dashboard() {
     setRequestIds(next);
   };
 
-  // Load stored order IDs (from orders collection)
+  // Load stored order IDs (from foodOrders collection)
   const loadStoredOrderIds = () => {
     if (!ordersStorageKey) return [];
     try {
@@ -765,17 +765,17 @@ export default function Dashboard() {
     };
   }, [requestIds]);
 
-  // ✅ LIVE LISTENER FOR ORDERS (from admin Tracking.tsx)
+  // ✅ LIVE LISTENER FOR FOOD ORDERS (UPDATED: Now listening to foodOrders collection)
   useEffect(() => {
-    if (!adminId || !roomNumberForQuery) return;
+    if (!adminId || !roomNumberForQuery || !safeMobile) return;
 
-    // Listen for orders for this specific room from admin's Tracking.tsx
-    const ordersQuery = query(
-      collection(db, "orders"),
-      where("adminId", "==", adminId),
-      where("roomNumber", "==", roomNumberForQuery),
-      where("guestMobile", "==", safeMobile)
-    );
+    // Listen for food orders for this specific room - UPDATED: Changed from "orders" to "foodOrders"
+const ordersQuery = query(
+  collection(db, "orders"), // ✅ Changed from "foodOrders"
+  where("adminId", "==", adminId),
+  where("roomNumber", "==", roomNumberForQuery),
+  where("guestMobile", "==", safeMobile)
+);
 
     // Clean up previous listener
     if (ordersUnsubRef.current) {
@@ -832,7 +832,7 @@ export default function Dashboard() {
                 setOrdersMap(prev => {
                   if (!prev[order.id]) return prev;
                   const progress = calculateProgress(prev[order.id]);
-                return {
+                  return {
                     ...prev,
                     [order.id]: {
                       ...prev[order.id],
@@ -871,7 +871,39 @@ export default function Dashboard() {
         });
       },
       (error) => {
-        console.error("Orders listener error:", error);
+        console.error("Food orders listener error:", error);
+        // Try alternative query method for guest access
+        console.log("Trying alternative query for guest access...");
+        
+        // Try querying without adminId for guest access
+        const guestOrdersQuery = query(
+          collection(db, "foodOrders"),
+          where("guestMobile", "==", safeMobile),
+          where("roomNumber", "==", roomNumberForQuery)
+        );
+        
+        const guestUnsub = onSnapshot(guestOrdersQuery, (snap) => {
+          snap.docChanges().forEach((change) => {
+            const order = { id: change.doc.id, ...change.doc.data() };
+            if (change.type === "added" || change.type === "modified") {
+              addOrderIdToStorage(order.id);
+              
+              const progressData = calculateProgress(order);
+              const updatedOrder = {
+                ...order,
+                percentage: progressData.percentage,
+                remainingMs: progressData.remainingMs
+              };
+              
+              setOrdersMap(prev => ({
+                ...prev,
+                [order.id]: updatedOrder
+              }));
+            }
+          });
+        });
+        
+        ordersUnsubRef.current = guestUnsub;
       }
     );
 

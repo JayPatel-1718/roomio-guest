@@ -20,7 +20,7 @@ export default function Menu() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const { adminId, roomNumber, guestName } = state || {};
+  const { adminId, roomNumber, guestName, mobile } = state || {};
 
   useEffect(() => {
     if (!state) {
@@ -136,6 +136,11 @@ export default function Menu() {
       return;
     }
 
+    if (!mobile) {
+      alert("Missing guest mobile number");
+      return;
+    }
+
     if (Object.keys(cart).length === 0) {
       alert("Your cart is empty!");
       return;
@@ -144,36 +149,45 @@ export default function Menu() {
     setOrdering(true);
 
     try {
-      const items = Object.entries(cart).map(([id, count]) => {
+      const orderDetails = Object.entries(cart).map(([id, count]) => {
         const item = menuItems.find((m) => m.id === id);
         return {
+          itemId: id,
           name: item?.name || "Unknown",
           price: item?.price || 0,
-          count,
+          quantity: count,
           category: item?.category || "unknown",
         };
       });
 
       console.log("📤 Placing order:", {
+        adminId,
         roomNumber,
         guestName,
-        items,
+        guestMobile: mobile,
+        orderDetails,
         totalPrice: totalAmount,
       });
 
-      const orderRef = collection(db, "users", adminId, "foodOrders");
-      await addDoc(orderRef, {
-        roomNumber: roomNumber || "N/A",
-        guestName: guestName || "Guest",
-        item: items.map((i) => `${i.count}x ${i.name}`).join(", "),
-        details: items,
-        totalPrice: totalAmount,
-        progress: 0,
-        status: "pending",
-        createdAt: serverTimestamp(),
-      });
-
-      console.log("✅ Order placed successfully");
+      // ✅ FIXED: Create order at ROOT level foodOrders collection
+      const orderRef = collection(db, "foodOrders");
+      // In Menu.js placeOrder function, ensure you have:
+await addDoc(orderRef, {
+  adminId: adminId, // ✅ Required
+  guestName: guestName || "Guest", // ✅ Required
+  guestMobile: mobile, // ✅ REQUIRED for rules
+  roomNumber: roomNumber || "N/A", // ✅ REQUIRED for rules
+  orderDetails: orderDetails,
+  items: orderDetails.map((item) => `${item.quantity}x ${item.name}`).join(", "),
+  totalAmount: totalAmount,
+  status: "pending", // ✅ REQUIRED
+  createdAt: serverTimestamp(),
+  updatedAt: serverTimestamp(),
+  source: "guest-menu",
+  progress: 0,
+  estimatedTime: null,
+});
+      console.log("✅ Order placed successfully at /foodOrders");
       alert("✅ Order placed successfully!");
       setCart({});
       navigate("/dashboard", { state });
@@ -181,11 +195,17 @@ export default function Menu() {
       console.error("❌ Error placing order:", e);
       console.error("Error code:", e.code);
       console.error("Error message:", e.message);
+      console.error("Full error object:", JSON.stringify(e, null, 2));
 
-      if (e.code === "permission-denied") {
+      if (e.code === 'permission-denied') {
         alert(
-          "Permission denied. Please check Firebase security rules for foodOrders."
+          "Permission denied. Please check:\n" +
+          "1. Firestore rules for /foodOrders\n" +
+          "2. You're creating at /foodOrders (root level)\n" +
+          "3. Required fields: adminId, guestMobile, roomNumber, status"
         );
+      } else if (e.code === 'invalid-argument') {
+        alert("Invalid data format. Please check all required fields are included.");
       } else {
         alert("Failed to place order: " + e.message);
       }
@@ -241,6 +261,7 @@ export default function Menu() {
               <li>Check Firebase console security rules</li>
               <li>Ensure menuItems collection has public read access</li>
               <li>Verify adminId: {adminId}</li>
+              <li>Path should be: /users/{adminId}/menuItems</li>
             </ul>
           </div>
           <button
@@ -349,6 +370,7 @@ export default function Menu() {
                 <div>Admin ID: {adminId || "Not set"}</div>
                 <div>Room: {roomNumber || "Not set"}</div>
                 <div>Guest: {guestName || "Not set"}</div>
+                <div>Mobile: {mobile || "Not set"}</div>
               </div>
             </div>
           )}
