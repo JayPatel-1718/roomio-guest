@@ -20,7 +20,19 @@ export default function Menu() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const { adminId, roomNumber, guestName, mobile } = state || {};
+  // ✅ FIXED: Get all required fields from state
+  const { 
+    adminId, 
+    roomNumber, 
+    guestName, 
+    guestMobile, // ✅ Use guestMobile (correct field name)
+    mobile,      // ✅ Fallback to mobile if guestMobile doesn't exist
+    adminEmail,
+    guestId
+  } = state || {};
+
+  // ✅ Use the correct mobile field
+  const safeMobile = guestMobile || mobile || "";
 
   useEffect(() => {
     if (!state) {
@@ -136,8 +148,13 @@ export default function Menu() {
       return;
     }
 
-    if (!mobile) {
-      alert("Missing guest mobile number");
+    if (!safeMobile) {
+      alert("Missing guest mobile number. Please go back and try again.");
+      return;
+    }
+
+    if (!roomNumber) {
+      alert("Missing room number. Please go back and try again.");
       return;
     }
 
@@ -164,29 +181,33 @@ export default function Menu() {
         adminId,
         roomNumber,
         guestName,
-        guestMobile: mobile,
+        guestMobile: safeMobile,
         orderDetails,
         totalPrice: totalAmount,
       });
 
-      // ✅ FIXED: Create order at ROOT level foodOrders collection
+      // ✅ FIXED: Create order at ROOT level foodOrders collection with correct field names
       const orderRef = collection(db, "foodOrders");
-      // In Menu.js placeOrder function, ensure you have:
-await addDoc(orderRef, {
-  adminId: adminId, // ✅ Required
-  guestName: guestName || "Guest", // ✅ Required
-  guestMobile: mobile, // ✅ REQUIRED for rules
-  roomNumber: roomNumber || "N/A", // ✅ REQUIRED for rules
-  orderDetails: orderDetails,
-  items: orderDetails.map((item) => `${item.quantity}x ${item.name}`).join(", "),
-  totalAmount: totalAmount,
-  status: "pending", // ✅ REQUIRED
-  createdAt: serverTimestamp(),
-  updatedAt: serverTimestamp(),
-  source: "guest-menu",
-  progress: 0,
-  estimatedTime: null,
-});
+      
+      await addDoc(orderRef, {
+        adminId: adminId,                    // ✅ Required for admin filtering
+        guestName: guestName || "Guest",     // ✅ Guest name
+        guestMobile: safeMobile,            // ✅ REQUIRED for guest queries - use safeMobile
+        roomNumber: roomNumber || "N/A",     // ✅ REQUIRED for guest queries
+        orderDetails: orderDetails,         // ✅ Detailed order items
+        items: orderDetails.map((item) => `${item.quantity}x ${item.name}`).join(", "), // ✅ Simple item string
+        totalAmount: totalAmount,           // ✅ Total amount
+        status: "pending",                  // ✅ REQUIRED - initial status
+        createdAt: serverTimestamp(),       // ✅ Timestamp
+        updatedAt: serverTimestamp(),       // ✅ Timestamp
+        source: "guest-menu",              // ✅ Source identifier
+        progress: 0,                       // ✅ Progress tracking
+        estimatedTime: null,              // ✅ Estimated time (set by admin)
+        // ✅ Additional helpful fields
+        guestId: guestId || null,         // ✅ Guest ID if available
+        adminEmail: adminEmail || null,   // ✅ Admin email if available
+      });
+
       console.log("✅ Order placed successfully at /foodOrders");
       alert("✅ Order placed successfully!");
       setCart({});
@@ -224,6 +245,37 @@ await addDoc(orderRef, {
     return labels[category] || category;
   };
 
+  // ✅ Show error if mobile number is missing
+  if (!safeMobile && !loading && !error) {
+    return (
+      <div style={getPageStyle(false)}>
+        <div style={styles.header}>
+          <button
+            onClick={() => navigate("/dashboard", { state })}
+            style={styles.backBtn}
+          >
+            ← Back
+          </button>
+          <div style={styles.title}>Food Menu</div>
+          <div style={styles.cartBadge}></div>
+        </div>
+        <div style={styles.errorState}>
+          <div style={styles.errorIcon}>📱</div>
+          <div style={styles.errorText}>Mobile Number Missing</div>
+          <div style={styles.errorSubtext}>
+            Your mobile number is not registered with this session. Please go back and try again.
+          </div>
+          <button
+            onClick={() => navigate("/dashboard", { state })}
+            style={styles.retryBtn}
+          >
+            ← Back to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={getPageStyle(totalAmount > 0)}>
       {/* Header */}
@@ -239,6 +291,16 @@ await addDoc(orderRef, {
           {totalItems > 0 && <span style={styles.badge}>{totalItems}</span>}
         </div>
       </div>
+
+      {/* Guest Info Banner */}
+      {safeMobile && roomNumber && (
+        <div style={styles.infoBanner}>
+          <span style={styles.infoBannerIcon}>🏨</span>
+          <span style={styles.infoBannerText}>
+            Room {roomNumber} • {safeMobile}
+          </span>
+        </div>
+      )}
 
       {/* Loading State */}
       {loading && (
@@ -370,7 +432,7 @@ await addDoc(orderRef, {
                 <div>Admin ID: {adminId || "Not set"}</div>
                 <div>Room: {roomNumber || "Not set"}</div>
                 <div>Guest: {guestName || "Not set"}</div>
-                <div>Mobile: {mobile || "Not set"}</div>
+                <div>Mobile: {safeMobile || "Not set"}</div>
               </div>
             </div>
           )}
@@ -468,6 +530,26 @@ const styles = {
     height: "24px",
     fontSize: "12px",
     fontWeight: "700",
+  },
+
+  // ✅ New styles for info banner
+  infoBanner: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    backgroundColor: "rgba(37, 99, 235, 0.1)",
+    padding: "12px 16px",
+    borderRadius: "12px",
+    marginBottom: "16px",
+    border: "1px solid rgba(37, 99, 235, 0.2)",
+  },
+  infoBannerIcon: {
+    fontSize: "18px",
+  },
+  infoBannerText: {
+    fontSize: "14px",
+    fontWeight: "700",
+    color: "#2563EB",
   },
 
   loadingState: {
