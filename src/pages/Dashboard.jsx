@@ -48,7 +48,7 @@ export default function Dashboard() {
   const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
   const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
 
-  // ✅ Food Order tracking state - UPDATED: Will listen to foodOrders collection
+  // ✅ Food Order tracking state
   const [orderIds, setOrderIds] = useState([]);
   const [ordersMap, setOrdersMap] = useState({});
   const ordersUnsubRef = useRef(null);
@@ -79,13 +79,14 @@ export default function Dashboard() {
     if (!state) navigate("/guest");
   }, [state, navigate]);
 
+  // ✅ FIXED: Use correct field names from Firestore
   const safeGuestName = state?.guestName || "Guest";
   const safeRoomNumber = state?.roomNumber ?? "—";
-  const safeMobile = state?.mobile || "—";
+  const safeMobile = state?.mobile || state?.guestMobile || "—"; // ✅ Support both formats
   const safeAdminEmail = state?.adminEmail || "—";
   const adminId = state?.adminId || null;
   const roomNumberForQuery = state?.roomNumber ?? null;
-  const guestDocId = state?.guestDocId || null;
+  const guestId = state?.guestId || state?.guestDocId || null; // ✅ Support both formats
 
   const maskedAdmin = useMemo(() => {
     if (!safeAdminEmail || safeAdminEmail === "—") return "—";
@@ -182,10 +183,10 @@ export default function Dashboard() {
 
   // ✅ Session cleanup function
   const cleanupSession = async () => {
-    if (!guestDocId) return;
+    if (!guestId) return;
 
     try {
-      await updateDoc(doc(db, "guests", guestDocId), {
+      await updateDoc(doc(db, "guests", guestId), {
         isLoggedIn: false,
         lastLogout: serverTimestamp()
       });
@@ -209,10 +210,10 @@ export default function Dashboard() {
 
   // ✅ REAL-TIME SESSION MONITORING
   useEffect(() => {
-    if (!guestDocId || !adminId || !safeMobile) return;
+    if (!guestId || !adminId || !safeMobile) return;
 
     // Listen to the guest document in real-time
-    const guestDocRef = doc(db, "guests", guestDocId);
+    const guestDocRef = doc(db, "guests", guestId);
 
     const unsubscribe = onSnapshot(guestDocRef, (snapshot) => {
       if (!snapshot.exists()) {
@@ -245,7 +246,7 @@ export default function Dashboard() {
     });
 
     return () => unsubscribe();
-  }, [guestDocId, adminId, safeMobile, navigate]);
+  }, [guestId, adminId, safeMobile, navigate]);
 
   // ✅ Session management useEffect for cleanup
   useEffect(() => {
@@ -258,7 +259,7 @@ export default function Dashboard() {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [guestDocId]);
+  }, [guestId]);
 
   // Load stored request IDs
   const loadStoredRequestIds = () => {
@@ -287,7 +288,7 @@ export default function Dashboard() {
     setRequestIds(next);
   };
 
-  // Load stored order IDs (from foodOrders collection)
+  // Load stored order IDs
   const loadStoredOrderIds = () => {
     if (!ordersStorageKey) return [];
     try {
@@ -335,7 +336,7 @@ export default function Dashboard() {
     setOrdersMap({});
   };
 
-  // ✅ Booking query to validate session
+  // ✅ FIXED: Booking query to validate session - use correct field names
   const bookingQuery = useMemo(() => {
     if (!adminId) return null;
     if (!safeMobile || safeMobile === "—") return null;
@@ -344,7 +345,7 @@ export default function Dashboard() {
     return query(
       collection(db, "guests"),
       where("adminId", "==", adminId),
-      where("mobile", "==", safeMobile),
+      where("guestMobile", "==", safeMobile), // ✅ FIXED: Use guestMobile, not mobile
       where("roomNumber", "==", roomNumberForQuery),
       where("isActive", "==", true)
     );
@@ -568,10 +569,10 @@ export default function Dashboard() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         source: "guest-web",
-        charges: chargeAmount, // Add charges to the request (0 for free requests)
+        charges: chargeAmount,
         currency: "INR",
-        isFreeRequest: chargeAmount === 0, // Mark if this was a free request
-        requestNumber: (requestCounts.laundry || 0) + 1, // Track request number
+        isFreeRequest: chargeAmount === 0,
+        requestNumber: (requestCounts.laundry || 0) + 1,
       });
 
       addRequestIdToStorage(docRef.id);
@@ -636,10 +637,10 @@ export default function Dashboard() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         source: "guest-web",
-        charges: chargeAmount, // Add charges to the request (0 for free requests)
+        charges: chargeAmount,
         currency: "INR",
-        isFreeRequest: chargeAmount === 0, // Mark if this was a free request
-        requestNumber: (requestCounts.housekeeping || 0) + 1, // Track request number
+        isFreeRequest: chargeAmount === 0,
+        requestNumber: (requestCounts.housekeeping || 0) + 1,
       });
 
       addRequestIdToStorage(docRef.id);
@@ -765,17 +766,17 @@ export default function Dashboard() {
     };
   }, [requestIds]);
 
-  // ✅ LIVE LISTENER FOR FOOD ORDERS (UPDATED: Now listening to foodOrders collection)
+  // ✅ LIVE LISTENER FOR FOOD ORDERS - FIXED: Use correct collection and query
   useEffect(() => {
     if (!adminId || !roomNumberForQuery || !safeMobile) return;
 
-    // Listen for food orders for this specific room - UPDATED: Changed from "orders" to "foodOrders"
-const ordersQuery = query(
-  collection(db, "orders"), // ✅ Changed from "foodOrders"
-  where("adminId", "==", adminId),
-  where("roomNumber", "==", roomNumberForQuery),
-  where("guestMobile", "==", safeMobile)
-);
+    // Listen for food orders for this specific room
+    const ordersQuery = query(
+      collection(db, "foodOrders"), // ✅ FIXED: Use foodOrders collection
+      where("adminId", "==", adminId),
+      where("roomNumber", "==", roomNumberForQuery),
+      where("guestMobile", "==", safeMobile)
+    );
 
     // Clean up previous listener
     if (ordersUnsubRef.current) {
@@ -872,7 +873,7 @@ const ordersQuery = query(
       },
       (error) => {
         console.error("Food orders listener error:", error);
-        // Try alternative query method for guest access
+        // Try alternative query method for guest access (fallback)
         console.log("Trying alternative query for guest access...");
         
         // Try querying without adminId for guest access
@@ -1261,7 +1262,7 @@ const ordersQuery = query(
                 if (charge > 0) {
                   showChargesConfirmation("Laundry", charge);
                 } else {
-                  requestLaundryPickup(true); // Skip confirmation for free requests
+                  requestLaundryPickup(true);
                 }
               }}
             />
@@ -1277,7 +1278,7 @@ const ordersQuery = query(
                 if (charge > 0) {
                   showChargesConfirmation("Housekeeping", charge);
                 } else {
-                  requestHousekeeping(true); // Skip confirmation for free requests
+                  requestHousekeeping(true);
                 }
               }}
             />
