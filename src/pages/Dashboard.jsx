@@ -29,64 +29,57 @@ export default function Dashboard() {
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
   const [sessionExpired, setSessionExpired] = useState(false);
+  const [logoutReason, setLogoutReason] = useState("");
 
-  // ✅ Arrival notification modal
   const [showArrivalNotification, setShowArrivalNotification] = useState(false);
   const [arrivalService, setArrivalService] = useState("");
   const [arrivalRequestId, setArrivalRequestId] = useState("");
 
-  // ✅ Completion notification modal
   const [showCompletionModal, setShowCompletionModal] = useState(false);
   const [completedService, setCompletedService] = useState("");
   const [completedOrderId, setCompletedOrderId] = useState("");
 
-  // ✅ Tabs
-  const [activeTab, setActiveTab] = useState("services"); // "services" | "requests" | "orders"
+  const [activeTab, setActiveTab] = useState("services");
 
-  // ✅ Request tracking state
   const [requestIds, setRequestIds] = useState([]);
-  const [requestsMap, setRequestsMap] = useState({}); // { [id]: {id, ...data} }
-  const unsubRef = useRef(new Map()); // Map<id, unsubscribe>
+  const [requestsMap, setRequestsMap] = useState({});
+  const unsubRef = useRef(new Map());
 
-  // ✅ Food Order tracking state
   const [orderIds, setOrderIds] = useState([]);
   const [ordersMap, setOrdersMap] = useState({});
   const ordersUnsubRef = useRef(null);
 
-  // ✅ Timer refs for progress bars
-  const timerRefs = useRef(new Map()); // Map<id, intervalId>
+  const timerRefs = useRef(new Map());
 
-  // ✅ Service Charges State
   const [serviceCharges, setServiceCharges] = useState({
-    laundry: 150, // ₹150 for laundry
-    housekeeping: 100, // ₹100 for housekeeping
+    laundry: 150,
+    housekeeping: 100,
   });
 
-  // ✅ Request Counts for Free Services (first 2 free)
   const [requestCounts, setRequestCounts] = useState({
     laundry: 0,
     housekeeping: 0
   });
 
-  // ✅ Show Charges Modal State
   const [showChargesModal, setShowChargesModal] = useState(false);
   const [selectedService, setSelectedService] = useState("");
   const [selectedServiceCharge, setSelectedServiceCharge] = useState(0);
   const [confirmationInProgress, setConfirmationInProgress] = useState(false);
   const [freeRequestsUsed, setFreeRequestsUsed] = useState(false);
 
+  const heartbeatIntervalRef = useRef(null);
+
   useEffect(() => {
     if (!state) navigate("/guest");
   }, [state, navigate]);
 
-  // ✅ FIXED: Use correct field names from Firestore
   const safeGuestName = state?.guestName || "Guest";
   const safeRoomNumber = state?.roomNumber ?? "—";
-  const safeMobile = state?.mobile || state?.guestMobile || "—"; // ✅ Support both formats
+  const safeMobile = state?.guestMobile || state?.mobile || "—";
   const safeAdminEmail = state?.adminEmail || "—";
   const adminId = state?.adminId || null;
   const roomNumberForQuery = state?.roomNumber ?? null;
-  const guestId = state?.guestId || state?.guestDocId || null; // ✅ Support both formats
+  const guestId = state?.guestId || null;
 
   const maskedAdmin = useMemo(() => {
     if (!safeAdminEmail || safeAdminEmail === "—") return "—";
@@ -95,7 +88,6 @@ export default function Dashboard() {
     return `${name.slice(0, 2)}***@${domain}`;
   }, [safeAdminEmail]);
 
-  // 🔑 localStorage keys
   const storageKey = useMemo(() => {
     if (!adminId) return null;
     if (!safeMobile || safeMobile === "—") return null;
@@ -117,7 +109,30 @@ export default function Dashboard() {
     return `roomio:requestCounts:${adminId}:${safeMobile}:${roomNumberForQuery}`;
   }, [adminId, safeMobile, roomNumberForQuery]);
 
-  // ✅ Load request counts from localStorage
+  const sendHeartbeat = async () => {
+    if (!guestId) return;
+    try {
+      await updateDoc(doc(db, "guests", guestId), {
+        lastActive: serverTimestamp()
+      });
+    } catch (e) {
+      console.error("Heartbeat failed:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (guestId) {
+      sendHeartbeat();
+      heartbeatIntervalRef.current = setInterval(sendHeartbeat, 30000);
+    }
+
+    return () => {
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
+      }
+    };
+  }, [guestId]);
+
   useEffect(() => {
     if (!requestCountsKey) return;
     
@@ -126,8 +141,6 @@ export default function Dashboard() {
       if (stored) {
         const parsed = JSON.parse(stored);
         setRequestCounts(parsed);
-        
-        // Check if free requests are used up for any service
         const anyFreeUsed = Object.values(parsed).some(count => count >= 2);
         setFreeRequestsUsed(anyFreeUsed);
       }
@@ -136,14 +149,11 @@ export default function Dashboard() {
     }
   }, [requestCountsKey]);
 
-  // ✅ Save request counts to localStorage
   useEffect(() => {
     if (!requestCountsKey) return;
     
     try {
       localStorage.setItem(requestCountsKey, JSON.stringify(requestCounts));
-      
-      // Update free requests used status
       const anyFreeUsed = Object.values(requestCounts).some(count => count >= 2);
       setFreeRequestsUsed(anyFreeUsed);
     } catch (error) {
@@ -151,7 +161,6 @@ export default function Dashboard() {
     }
   }, [requestCounts, requestCountsKey]);
 
-  // ✅ Helper functions for service charges
   const shouldChargeForService = (serviceType) => {
     const serviceKey = serviceType.toLowerCase();
     return (requestCounts[serviceKey] || 0) >= 2;
@@ -162,7 +171,7 @@ export default function Dashboard() {
     const count = requestCounts[serviceKey] || 0;
     
     if (count < 2) {
-      return 0; // Free for first 2 requests
+      return 0;
     }
     
     if (serviceType === "Laundry") return serviceCharges.laundry;
@@ -181,7 +190,6 @@ export default function Dashboard() {
     return `₹${serviceCharges[serviceKey]} per request`;
   };
 
-  // ✅ Session cleanup function
   const cleanupSession = async () => {
     if (!guestId) return;
 
@@ -196,11 +204,13 @@ export default function Dashboard() {
     }
   };
 
-  // ✅ Handle logout
   const handleLogout = async () => {
     await cleanupSession();
 
-    // Navigate back to guest login
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+    }
+
     navigate("/guest", { 
       state: { 
         admin: safeAdminEmail 
@@ -208,17 +218,15 @@ export default function Dashboard() {
     });
   };
 
-  // ✅ REAL-TIME SESSION MONITORING
   useEffect(() => {
     if (!guestId || !adminId || !safeMobile) return;
 
-    // Listen to the guest document in real-time
     const guestDocRef = doc(db, "guests", guestId);
 
     const unsubscribe = onSnapshot(guestDocRef, (snapshot) => {
       if (!snapshot.exists()) {
-        // Document deleted (admin checked out)
         setSessionExpired(true);
+        setLogoutReason("Your booking has been removed by the admin.");
         alert("Your session has expired. Admin has checked you out.");
         navigate("/guest", { replace: true });
         return;
@@ -226,18 +234,30 @@ export default function Dashboard() {
 
       const guestData = snapshot.data();
       
-      // Check if someone else logged in (isLoggedIn changed to false by another login)
-      if (!guestData.isLoggedIn) {
+      if (!guestData.isActive) {
         setSessionExpired(true);
-        alert("Someone else logged in with your mobile number. Your session has been terminated.");
+        setLogoutReason("Your booking is no longer active. Please contact reception.");
+        alert("Your booking is no longer active. Please contact reception.");
         navigate("/guest", { replace: true });
         return;
       }
 
-      // Check if admin marked as inactive
-      if (!guestData.isActive) {
+      if (guestData.isLoggedIn === false) {
+        const isLoggingOut = sessionExpired === true;
+        if (!isLoggingOut) {
+          setSessionExpired(true);
+          setLogoutReason("Someone else logged in with your mobile number. Your session has been terminated.");
+          alert("Someone else logged in with your mobile number. Your session has been terminated.");
+          navigate("/guest", { replace: true });
+        }
+        return;
+      }
+
+      const checkout = guestData.checkoutAt?.toDate?.();
+      if (checkout && checkout < new Date()) {
         setSessionExpired(true);
-        alert("Your booking is no longer active. Please contact reception.");
+        setLogoutReason("Your booking has expired.");
+        alert("Your booking has expired. Please contact reception for extension.");
         navigate("/guest", { replace: true });
         return;
       }
@@ -246,22 +266,26 @@ export default function Dashboard() {
     });
 
     return () => unsubscribe();
-  }, [guestId, adminId, safeMobile, navigate]);
+  }, [guestId, adminId, safeMobile, navigate, sessionExpired]);
 
-  // ✅ Session management useEffect for cleanup
   useEffect(() => {
-    const handleBeforeUnload = async (e) => {
+    const handleBeforeUnload = async () => {
+      await cleanupSession();
+    };
+
+    const handleUnload = async () => {
       await cleanupSession();
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('unload', handleUnload);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('unload', handleUnload);
     };
   }, [guestId]);
 
-  // Load stored request IDs
   const loadStoredRequestIds = () => {
     if (!storageKey) return [];
     try {
@@ -288,7 +312,6 @@ export default function Dashboard() {
     setRequestIds(next);
   };
 
-  // Load stored order IDs
   const loadStoredOrderIds = () => {
     if (!ordersStorageKey) return [];
     try {
@@ -322,7 +345,6 @@ export default function Dashboard() {
     } catch {}
     setRequestIds([]);
     setRequestsMap({});
-    // Clear all timers
     timerRefs.current.forEach((intervalId) => clearInterval(intervalId));
     timerRefs.current.clear();
   };
@@ -336,7 +358,6 @@ export default function Dashboard() {
     setOrdersMap({});
   };
 
-  // ✅ FIXED: Booking query to validate session - use correct field names
   const bookingQuery = useMemo(() => {
     if (!adminId) return null;
     if (!safeMobile || safeMobile === "—") return null;
@@ -345,20 +366,18 @@ export default function Dashboard() {
     return query(
       collection(db, "guests"),
       where("adminId", "==", adminId),
-      where("guestMobile", "==", safeMobile), // ✅ FIXED: Use guestMobile, not mobile
+      where("guestMobile", "==", safeMobile),
       where("roomNumber", "==", roomNumberForQuery),
       where("isActive", "==", true)
     );
   }, [adminId, safeMobile, roomNumberForQuery]);
 
-  // ✅ AUTO-KICK if booking removed
   useEffect(() => {
     if (!state) return;
     if (!bookingQuery) return;
 
     const unsub = onSnapshot(bookingQuery, (snap) => {
       if (snap.empty) {
-        // Also cleanup session when booking is removed
         cleanupSession();
         navigate("/guest", { replace: true });
       }
@@ -367,7 +386,6 @@ export default function Dashboard() {
     return () => unsub();
   }, [state, bookingQuery, navigate]);
 
-  // ✅ Load stored request IDs on mount
   useEffect(() => {
     if (!state) return;
     const ids = loadStoredRequestIds();
@@ -377,7 +395,6 @@ export default function Dashboard() {
     setOrderIds(orderIds);
   }, [state, storageKey, ordersStorageKey]);
 
-  // ✅ Calculate progress for accepted/in-progress requests
   const calculateProgress = (request) => {
     if (!request?.estimatedTime) {
       return { percentage: 0, remainingMs: request?.estimatedTime ? request.estimatedTime * 60 * 1000 : 0 };
@@ -389,24 +406,17 @@ export default function Dashboard() {
 
     let acceptedTime;
 
-    // Check if acceptedAt is a Firestore Timestamp
     if (request.acceptedAt.toMillis) {
       acceptedTime = request.acceptedAt.toMillis();
-    } 
-    // Check if it's a string timestamp
-    else if (typeof request.acceptedAt === 'string') {
+    } else if (typeof request.acceptedAt === 'string') {
       acceptedTime = new Date(request.acceptedAt).getTime();
-    }
-    // Check if it's a number
-    else if (typeof request.acceptedAt === 'number') {
+    } else if (typeof request.acceptedAt === 'number') {
       acceptedTime = request.acceptedAt;
-    }
-    // Fallback to current time
-    else {
+    } else {
       acceptedTime = Date.now();
     }
 
-    const estimatedMs = request.estimatedTime * 60 * 1000; // Convert minutes to ms
+    const estimatedMs = request.estimatedTime * 60 * 1000;
     const endTime = acceptedTime + estimatedMs;
     const now = Date.now();
 
@@ -421,7 +431,6 @@ export default function Dashboard() {
     return { percentage, remainingMs };
   };
 
-  // ✅ Check for arrival notifications
   const checkArrivalNotifications = () => {
     const now = Date.now();
 
@@ -434,13 +443,11 @@ export default function Dashboard() {
         const estimatedMs = request.estimatedTime * 60 * 1000;
         const timeUntilArrival = acceptedTime + estimatedMs - now;
         
-        // Show notification 2 minutes before arrival
         if (timeUntilArrival > 0 && timeUntilArrival <= 2 * 60 * 1000) {
           setArrivalService(request.type || "Service");
           setArrivalRequestId(request.id);
           setShowArrivalNotification(true);
           
-          // Mark as notified in local state to prevent duplicate notifications
           setRequestsMap(prev => ({
             ...prev,
             [request.id]: { ...prev[request.id], arrivalNotified: true }
@@ -450,15 +457,12 @@ export default function Dashboard() {
     });
   };
 
-  // ✅ Handle arrival notification confirmation
   const handleArrivalConfirm = async () => {
-    // Remove the request from local storage
     if (arrivalRequestId) {
       const updatedIds = requestIds.filter(id => id !== arrivalRequestId);
       saveStoredRequestIds(updatedIds);
       setRequestIds(updatedIds);
 
-      // Update Firestore to mark as completed
       try {
         await updateDoc(doc(db, "serviceRequests", arrivalRequestId), {
           status: "completed",
@@ -469,7 +473,6 @@ export default function Dashboard() {
         console.error("Failed to update request status:", error);
       }
       
-      // Clear timer if exists
       if (timerRefs.current.has(arrivalRequestId)) {
         clearInterval(timerRefs.current.get(arrivalRequestId));
         timerRefs.current.delete(arrivalRequestId);
@@ -481,15 +484,12 @@ export default function Dashboard() {
     setArrivalRequestId("");
   };
 
-  // ✅ Handle completion notification confirmation
   const handleCompletionConfirm = () => {
     if (completedOrderId) {
-      // Remove the order from local storage
       const updatedIds = orderIds.filter(id => id !== completedOrderId);
       saveStoredOrderIds(updatedIds);
       setOrderIds(updatedIds);
 
-      // Clear timer if exists
       if (timerRefs.current.has(`order-${completedOrderId}`)) {
         clearInterval(timerRefs.current.get(`order-${completedOrderId}`));
         timerRefs.current.delete(`order-${completedOrderId}`);
@@ -501,23 +501,20 @@ export default function Dashboard() {
     setCompletedOrderId("");
   };
 
-  // ✅ Show Charges Confirmation Modal
   const showChargesConfirmation = (service, charge) => {
     setSelectedService(service);
     setSelectedServiceCharge(charge);
     setShowChargesModal(true);
   };
 
-  // ✅ Handle Service Confirmation
   const handleServiceConfirmation = async () => {
     setConfirmationInProgress(true);
     setShowChargesModal(false);
     
-    // Call the appropriate service function
     if (selectedService === "Laundry") {
-      await requestLaundryPickup(true); // Pass true to skip confirmation
+      await requestLaundryPickup(true);
     } else if (selectedService === "Housekeeping") {
-      await requestHousekeeping(true); // Pass true to skip confirmation
+      await requestHousekeeping(true);
     }
     
     setConfirmationInProgress(false);
@@ -525,7 +522,6 @@ export default function Dashboard() {
     setSelectedServiceCharge(0);
   };
 
-  // ✅ Create Service Request (Laundry)
   const requestLaundryPickup = async (confirmed = false) => {
     if (!adminId) {
       alert("Missing adminId. Please verify again from QR.");
@@ -538,11 +534,9 @@ export default function Dashboard() {
       return;
     }
 
-    // Check if charges apply
     const chargeAmount = getServiceCharge("Laundry");
     const needsCharges = chargeAmount > 0;
     
-    // Show charges confirmation modal if needed and not already confirmed
     if (needsCharges && !confirmed) {
       showChargesConfirmation("Laundry", chargeAmount);
       return;
@@ -577,7 +571,6 @@ export default function Dashboard() {
 
       addRequestIdToStorage(docRef.id);
       
-      // Update laundry request count
       setRequestCounts(prev => ({
         ...prev,
         laundry: (prev.laundry || 0) + 1
@@ -593,7 +586,6 @@ export default function Dashboard() {
     }
   };
 
-  // ✅ Create Service Request (Housekeeping)
   const requestHousekeeping = async (confirmed = false) => {
     if (!adminId) {
       alert("Missing adminId. Please verify again from QR.");
@@ -606,11 +598,9 @@ export default function Dashboard() {
       return;
     }
 
-    // Check if charges apply
     const chargeAmount = getServiceCharge("Housekeeping");
     const needsCharges = chargeAmount > 0;
     
-    // Show charges confirmation modal if needed and not already confirmed
     if (needsCharges && !confirmed) {
       showChargesConfirmation("Housekeeping", chargeAmount);
       return;
@@ -645,7 +635,6 @@ export default function Dashboard() {
 
       addRequestIdToStorage(docRef.id);
 
-      // Update housekeeping request count
       setRequestCounts(prev => ({
         ...prev,
         housekeeping: (prev.housekeeping || 0) + 1
@@ -661,11 +650,9 @@ export default function Dashboard() {
     }
   };
 
-  // ✅ Live listeners for service requests (laundry/housekeeping)
   useEffect(() => {
     const existing = unsubRef.current;
 
-    // cleanup removed listeners
     for (const [id, unsub] of existing.entries()) {
       if (!requestIds.includes(id)) {
         try {
@@ -675,7 +662,6 @@ export default function Dashboard() {
       }
     }
 
-    // add listeners for new IDs
     requestIds.forEach((id) => {
       if (existing.has(id)) return;
 
@@ -694,7 +680,6 @@ export default function Dashboard() {
           }
           const data = snap.data();
           
-          // Skip food orders in this listener
           if (data.type === "Food Order") return;
           
           const progressData = calculateProgress(data);
@@ -710,12 +695,10 @@ export default function Dashboard() {
             [id]: updatedData,
           }));
           
-          // Start progress timer for in-progress requests with estimated time
           if (data.status === "in-progress" && 
               data.estimatedTime && 
               data.acceptedAt) {
             
-            // Clear existing timer if any
             if (timerRefs.current.has(id)) {
               clearInterval(timerRefs.current.get(id));
             }
@@ -738,7 +721,6 @@ export default function Dashboard() {
             timerRefs.current.set(id, intervalId);
           }
           
-          // Stop timer if request is completed or deleted
           if ((data.status === "completed" || data.status === "deleted") && 
               timerRefs.current.has(id)) {
             clearInterval(timerRefs.current.get(id));
@@ -766,19 +748,16 @@ export default function Dashboard() {
     };
   }, [requestIds]);
 
-  // ✅ LIVE LISTENER FOR FOOD ORDERS - FIXED: Use correct collection and query
   useEffect(() => {
     if (!adminId || !roomNumberForQuery || !safeMobile) return;
 
-    // Listen for food orders for this specific room
     const ordersQuery = query(
-      collection(db, "foodOrders"), // ✅ FIXED: Use foodOrders collection
+      collection(db, "foodOrders"),
       where("adminId", "==", adminId),
       where("roomNumber", "==", roomNumberForQuery),
       where("guestMobile", "==", safeMobile)
     );
 
-    // Clean up previous listener
     if (ordersUnsubRef.current) {
       ordersUnsubRef.current();
     }
@@ -790,12 +769,10 @@ export default function Dashboard() {
           const order = { id: change.doc.id, ...change.doc.data() };
           
           if (change.type === "added" || change.type === "modified") {
-            // Add to storage if this is a new order
             if (change.type === "added") {
               addOrderIdToStorage(order.id);
             }
             
-            // Calculate progress
             const progressData = calculateProgress(order);
             const updatedOrder = {
               ...order,
@@ -803,28 +780,23 @@ export default function Dashboard() {
               remainingMs: progressData.remainingMs
             };
             
-            // Update orders map
             setOrdersMap(prev => ({
               ...prev,
               [order.id]: updatedOrder
             }));
             
-            // Check for completion notification
             if (order.status === "completed" && !order.completionNotified) {
               setCompletedService(order.dishName || "Food Order");
               setCompletedOrderId(order.id);
               setShowCompletionModal(true);
               
-              // Mark as notified
               setOrdersMap(prev => ({
                 ...prev,
                 [order.id]: { ...prev[order.id], completionNotified: true }
               }));
             }
             
-            // Start progress timer for in-progress orders with estimated time
             if (order.status === "in-progress" && order.estimatedTime && order.acceptedAt) {
-              // Clear existing timer if any
               if (timerRefs.current.has(`order-${order.id}`)) {
                 clearInterval(timerRefs.current.get(`order-${order.id}`));
               }
@@ -847,7 +819,6 @@ export default function Dashboard() {
               timerRefs.current.set(`order-${order.id}`, intervalId);
             }
             
-            // Stop timer if order is completed or cancelled
             if ((order.status === "completed" || order.status === "cancelled") && 
                 timerRefs.current.has(`order-${order.id}`)) {
               clearInterval(timerRefs.current.get(`order-${order.id}`));
@@ -856,14 +827,12 @@ export default function Dashboard() {
           }
           
           if (change.type === "removed") {
-            // Remove from local state
             setOrdersMap(prev => {
               const copy = { ...prev };
               delete copy[order.id];
               return copy;
             });
             
-            // Clear timer if exists
             if (timerRefs.current.has(`order-${order.id}`)) {
               clearInterval(timerRefs.current.get(`order-${order.id}`));
               timerRefs.current.delete(`order-${order.id}`);
@@ -873,10 +842,7 @@ export default function Dashboard() {
       },
       (error) => {
         console.error("Food orders listener error:", error);
-        // Try alternative query method for guest access (fallback)
-        console.log("Trying alternative query for guest access...");
         
-        // Try querying without adminId for guest access
         const guestOrdersQuery = query(
           collection(db, "foodOrders"),
           where("guestMobile", "==", safeMobile),
@@ -915,7 +881,6 @@ export default function Dashboard() {
         ordersUnsubRef.current();
       }
       
-      // Clear order timers
       timerRefs.current.forEach((intervalId, key) => {
         if (key.startsWith('order-')) {
           clearInterval(intervalId);
@@ -925,7 +890,6 @@ export default function Dashboard() {
     };
   }, [adminId, roomNumberForQuery, safeMobile]);
 
-  // ✅ Check for arrival notifications periodically
   useEffect(() => {
     const interval = setInterval(checkArrivalNotifications, 30000);
     return () => clearInterval(interval);
@@ -976,20 +940,18 @@ export default function Dashboard() {
     }
   };
 
-  // ✅ Navigate to Menu Page
   const goToMenu = () => {
     navigate("/menu", { state });
   };
 
-  // ✅ Show session expired message
   if (sessionExpired) {
     return (
       <div style={styles.expiredContainer}>
         <div style={styles.expiredCard}>
           <div style={styles.expiredIcon}>🔒</div>
-          <div style={styles.expiredTitle}>Session Expired</div>
+          <div style={styles.expiredTitle}>Session Terminated</div>
           <div style={styles.expiredMessage}>
-            Someone else logged in with your mobile number.
+            {logoutReason || "Your session has been terminated."}
           </div>
           <button
             onClick={() => navigate("/guest", { state: { admin: safeAdminEmail } })}
@@ -1004,7 +966,6 @@ export default function Dashboard() {
 
   if (!state) return null;
 
-  // ✅ Toast helper
   const showToast = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(""), 2500);
@@ -1014,7 +975,6 @@ export default function Dashboard() {
     <div style={styles.page} className="safeArea">
       <GlobalStyles />
 
-      {/* ✅ CHARGES CONFIRMATION MODAL */}
       {showChargesModal && (
         <div style={styles.chargesOverlay}>
           <div style={styles.chargesModal}>
@@ -1072,7 +1032,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ✅ ARRIVAL NOTIFICATION MODAL */}
       {showArrivalNotification && (
         <div style={styles.arrivalOverlay}>
           <div style={styles.arrivalModal}>
@@ -1094,7 +1053,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ✅ COMPLETION NOTIFICATION MODAL */}
       {showCompletionModal && (
         <div style={styles.completionOverlay}>
           <div style={styles.completionModal}>
@@ -1242,7 +1200,6 @@ export default function Dashboard() {
 
         {activeTab === "services" ? (
           <div style={styles.grid} className="servicesGrid">
-            {/* ✅ Navigate to Menu Page */}
             <ServiceCard
               icon="🍽"
               title="Food Menu"
@@ -1348,7 +1305,6 @@ export default function Dashboard() {
                         {r.requestNumber && ` • Request #${r.requestNumber}`}
                       </div>
                       
-                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS REQUESTS */}
                       {hasProgress && (
                         <div style={styles.progressSection}>
                           <div style={styles.progressHeader}>
@@ -1451,7 +1407,6 @@ export default function Dashboard() {
                         {r.price && ` • ₹${r.price}`}
                       </div>
                       
-                      {/* ✅ PROGRESS BAR FOR IN-PROGRESS ORDERS */}
                       {hasProgress && !isCompleted && (
                         <div style={styles.progressSection}>
                           <div style={styles.progressHeader}>
@@ -1478,7 +1433,6 @@ export default function Dashboard() {
                         </div>
                       )}
                       
-                      {/* ✅ PENDING MESSAGE */}
                       {isPending && (
                         <div style={styles.pendingMessage}>
                           <span style={styles.pendingIcon}>⏳</span>
@@ -1486,7 +1440,6 @@ export default function Dashboard() {
                         </div>
                       )}
                       
-                      {/* ✅ COMPLETED MESSAGE */}
                       {isCompleted && (
                         <div style={styles.completedMessage}>
                           <span style={styles.completedIcon}>✅</span>
@@ -1609,7 +1562,6 @@ function GlobalStyles() {
 }
 
 const styles = {
-  // ✅ Free Badge Styles
   freeBadge: {
     marginLeft: 8,
     backgroundColor: "rgba(22, 163, 74, 0.15)",
@@ -1621,7 +1573,6 @@ const styles = {
     border: "1px solid rgba(22, 163, 74, 0.3)",
   },
 
-  // ✅ Charges Confirmation Modal Styles
   chargesOverlay: {
     position: "fixed",
     top: 0,
@@ -1700,7 +1651,6 @@ const styles = {
     transition: "all 0.2s ease",
   },
 
-  // ✅ Charges Badge in Request List
   chargesBadge: {
     marginLeft: 8,
     backgroundColor: "rgba(245, 158, 11, 0.15)",
@@ -1712,7 +1662,6 @@ const styles = {
     border: "1px solid rgba(245, 158, 11, 0.3)",
   },
 
-  // ✅ Tab Row Styles (updated for 3 tabs)
   tabRow: {
     display: "grid",
     gridTemplateColumns: "1fr 1fr 1fr",
@@ -1750,7 +1699,6 @@ const styles = {
     fontWeight: 900,
   },
 
-  // ✅ Completion Notification Styles
   completionOverlay: {
     position: "fixed",
     top: 0,
@@ -1808,7 +1756,6 @@ const styles = {
     transition: "all 0.2s ease",
   },
 
-  // ✅ Pending Message Styles
   pendingMessage: {
     marginTop: 12,
     padding: 12,
@@ -1829,7 +1776,6 @@ const styles = {
     fontSize: 13,
   },
 
-  // ✅ Completed Message Styles
   completedMessage: {
     marginTop: 12,
     padding: 12,
@@ -1850,7 +1796,6 @@ const styles = {
     fontSize: 13,
   },
 
-  // ✅ Notes Styles
   reqNotes: {
     marginTop: 8,
     padding: 10,
@@ -1861,7 +1806,6 @@ const styles = {
     borderLeft: "3px solid #F59E0B",
   },
 
-  // ✅ Arrival Notification Styles
   arrivalOverlay: {
     position: "fixed",
     top: 0,
@@ -1919,7 +1863,6 @@ const styles = {
     transition: "all 0.2s ease",
   },
 
-  // ✅ Progress Bar Styles
   progressSection: {
     marginTop: 16,
     padding: 14,

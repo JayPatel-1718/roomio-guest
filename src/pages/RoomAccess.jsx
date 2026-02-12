@@ -1,18 +1,17 @@
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMemo, useState } from "react";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
 
 export default function RoomAccess() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const adminParam = params.get("admin"); // This can be either email or UID
+  const adminParam = params.get("admin");
 
   const [mobile, setMobile] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Try to determine if it's an email or UID
   const isEmail = adminParam?.includes('@');
   
   const maskedAdmin = useMemo(() => {
@@ -22,7 +21,6 @@ export default function RoomAccess() {
       if (!domain) return adminParam;
       return `${name.slice(0, 2)}***@${domain}`;
     } else {
-      // It's a UID - mask it
       if (adminParam.length > 8) {
         return `${adminParam.slice(0, 4)}...${adminParam.slice(-4)}`;
       }
@@ -49,19 +47,17 @@ export default function RoomAccess() {
       let q;
       
       if (isEmail) {
-        // If QR has email, query by adminEmail
         q = query(
           collection(db, "guests"),
           where("adminEmail", "==", adminParam),
-          where("guestMobile", "==", mobile), // ✅ FIXED: use guestMobile
+          where("guestMobile", "==", mobile),
           where("isActive", "==", true)
         );
       } else {
-        // If QR has UID, query by adminId (recommended)
         q = query(
           collection(db, "guests"),
           where("adminId", "==", adminParam),
-          where("guestMobile", "==", mobile), // ✅ FIXED: use guestMobile
+          where("guestMobile", "==", mobile),
           where("isActive", "==", true)
         );
       }
@@ -79,6 +75,19 @@ export default function RoomAccess() {
       const guest = guestDoc.data();
       const guestId = guestDoc.id;
 
+      // Check if already logged in
+      if (guest.isLoggedIn) {
+        const confirmTakeover = window.confirm(
+          "This guest is already logged in on another device. Do you want to take over this session? The previous device will be logged out."
+        );
+        
+        if (!confirmTakeover) {
+          setError("Login cancelled. Please try again later.");
+          setLoading(false);
+          return;
+        }
+      }
+
       // expiry check
       const checkout = guest.checkoutAt?.toDate?.();
       if (checkout && checkout < new Date()) {
@@ -86,11 +95,18 @@ export default function RoomAccess() {
         return;
       }
 
-      // adminId required for service requests routing
       if (!guest.adminId) {
         setError("Admin mapping missing. Please contact reception.");
         return;
       }
+
+      // Set isLoggedIn to true when guest logs in
+      await updateDoc(doc(db, "guests", guestId), {
+        isLoggedIn: true,
+        lastLogin: serverTimestamp(),
+        lastActive: serverTimestamp(),
+        deviceInfo: navigator.userAgent || "Unknown device"
+      });
 
       navigate("/dashboard", {
         state: {
@@ -98,7 +114,7 @@ export default function RoomAccess() {
           guestName: guest.guestName || "Guest",
           roomNumber: guest.roomNumber,
           adminEmail: guest.adminEmail,
-          mobile: guest.guestMobile,
+          guestMobile: guest.guestMobile,
           adminId: guest.adminId,
         },
       });
