@@ -6,18 +6,20 @@ import { db } from "../firebase";
 export default function RoomAccess() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const adminEmail = params.get("admin");
+  const adminId = params.get("admin"); // ✅ FIXED: This should be adminId, not adminEmail
 
   const [mobile, setMobile] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const maskedAdmin = useMemo(() => {
-    if (!adminEmail) return "Unknown";
-    const [name, domain] = adminEmail.split("@");
-    if (!domain) return adminEmail;
-    return `${name.slice(0, 2)}***@${domain}`;
-  }, [adminEmail]);
+    if (!adminId) return "Unknown";
+    // Mask the admin ID for display
+    if (adminId.length > 8) {
+      return `${adminId.slice(0, 4)}...${adminId.slice(-4)}`;
+    }
+    return adminId;
+  }, [adminId]);
 
   const handleContinue = async () => {
     setError("");
@@ -27,24 +29,24 @@ export default function RoomAccess() {
       return;
     }
 
-    if (!adminEmail) {
-      setError("Invalid QR: admin missing");
+    if (!adminId) {
+      setError("Invalid QR: admin ID missing");
       return;
     }
 
     setLoading(true);
 
     try {
+      // ✅ FIXED: Query by adminId (not adminEmail)
       const q = query(
         collection(db, "guests"),
-        where("adminEmail", "==", adminEmail),
-        where("mobile", "==", mobile),
-        where("isActive", "==", true) // ✅ will fail if admin checked out guest
+        where("adminId", "==", adminId),
+        where("guestMobile", "==", mobile), // ✅ FIXED: Use guestMobile field
+        where("isActive", "==", true)
       );
 
       const snap = await getDocs(q);
 
-      // ✅ if admin checked out → guest doc becomes isActive:false → snap.empty
       if (snap.empty) {
         setError(
           "No active booking found. This guest may have checked out or access has expired."
@@ -52,16 +54,19 @@ export default function RoomAccess() {
         return;
       }
 
-      const guest = snap.docs[0].data();
+      const guestDoc = snap.docs[0];
+      const guest = guestDoc.data();
+      const guestId = guestDoc.id;
 
       // expiry check
       const checkout = guest.checkoutAt?.toDate?.();
       if (checkout && checkout < new Date()) {
-        setError("Booking expired");
+        // ✅ FIXED: If expired, automatically mark as inactive
+        setError("Booking has expired. Please contact reception.");
         return;
       }
 
-      // adminId required for service requests routing
+      // ✅ FIXED: Use adminId from the guest document
       if (!guest.adminId) {
         setError("Admin mapping missing. Please contact reception.");
         return;
@@ -69,14 +74,15 @@ export default function RoomAccess() {
 
       navigate("/dashboard", {
         state: {
-          guestName: guest.guestName,
+          guestId: guestId,
+          guestName: guest.guestName || "Guest",
           roomNumber: guest.roomNumber,
-          adminEmail,
-          mobile,
-          adminId: guest.adminId,
+          adminId: guest.adminId, // ✅ Use adminId from guest doc
+          adminEmail: guest.adminEmail, // Optional
+          mobile: guest.guestMobile,
         },
       });
-    } catch (e) {
+    } catch (e: any) {
       console.error("VERIFY ERROR:", e);
       setError(e?.message || "Failed to verify guest");
     } finally {
@@ -155,7 +161,7 @@ export default function RoomAccess() {
                 </svg>
               </div>
               <div>
-                <div style={styles.infoLabel}>Hotel Admin</div>
+                <div style={styles.infoLabel}>Hotel ID</div>
                 <div style={styles.infoValue}>{maskedAdmin}</div>
               </div>
             </div>
