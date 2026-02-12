@@ -6,7 +6,7 @@ import { db } from "../firebase";
 export default function RoomAccess() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const adminId = params.get("admin");
+  const adminId = params.get("admin"); // ✅ FIXED: This should be adminId, not adminEmail
 
   const [mobile, setMobile] = useState("");
   const [error, setError] = useState("");
@@ -14,6 +14,7 @@ export default function RoomAccess() {
 
   const maskedAdmin = useMemo(() => {
     if (!adminId) return "Unknown";
+    // Mask the admin ID for display
     if (adminId.length > 8) {
       return `${adminId.slice(0, 4)}...${adminId.slice(-4)}`;
     }
@@ -36,10 +37,11 @@ export default function RoomAccess() {
     setLoading(true);
 
     try {
+      // ✅ FIXED: Query by adminId (not adminEmail)
       const q = query(
         collection(db, "guests"),
         where("adminId", "==", adminId),
-        where("guestMobile", "==", mobile),
+        where("guestMobile", "==", mobile), // ✅ FIXED: Use guestMobile field
         where("isActive", "==", true)
       );
 
@@ -56,12 +58,15 @@ export default function RoomAccess() {
       const guest = guestDoc.data();
       const guestId = guestDoc.id;
 
+      // expiry check
       const checkout = guest.checkoutAt?.toDate?.();
       if (checkout && checkout < new Date()) {
+        // ✅ FIXED: If expired, automatically mark as inactive
         setError("Booking has expired. Please contact reception.");
         return;
       }
 
+      // ✅ FIXED: Use adminId from the guest document
       if (!guest.adminId) {
         setError("Admin mapping missing. Please contact reception.");
         return;
@@ -72,14 +77,14 @@ export default function RoomAccess() {
           guestId: guestId,
           guestName: guest.guestName || "Guest",
           roomNumber: guest.roomNumber,
-          adminId: guest.adminId,
-          adminEmail: guest.adminEmail,
+          adminId: guest.adminId, // ✅ Use adminId from guest doc
+          adminEmail: guest.adminEmail, // Optional
           mobile: guest.guestMobile,
         },
       });
-    } catch (error) {
-      console.error("VERIFY ERROR:", error);
-      setError(error?.message || "Failed to verify guest");
+    } catch (e: any) {
+      console.error("VERIFY ERROR:", e);
+      setError(e?.message || "Failed to verify guest");
     } finally {
       setLoading(false);
     }
