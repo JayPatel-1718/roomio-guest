@@ -6,18 +6,29 @@ import { db } from "../firebase";
 export default function RoomAccess() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const adminEmail = params.get("admin");
+  const adminParam = params.get("admin"); // This can be either email or UID
 
   const [mobile, setMobile] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // Try to determine if it's an email or UID
+  const isEmail = adminParam?.includes('@');
+  
   const maskedAdmin = useMemo(() => {
-    if (!adminEmail) return "Unknown";
-    const [name, domain] = adminEmail.split("@");
-    if (!domain) return adminEmail;
-    return `${name.slice(0, 2)}***@${domain}`;
-  }, [adminEmail]);
+    if (!adminParam) return "Unknown";
+    if (isEmail) {
+      const [name, domain] = adminParam.split("@");
+      if (!domain) return adminParam;
+      return `${name.slice(0, 2)}***@${domain}`;
+    } else {
+      // It's a UID - mask it
+      if (adminParam.length > 8) {
+        return `${adminParam.slice(0, 4)}...${adminParam.slice(-4)}`;
+      }
+      return adminParam;
+    }
+  }, [adminParam, isEmail]);
 
   const handleContinue = async () => {
     setError("");
@@ -27,7 +38,7 @@ export default function RoomAccess() {
       return;
     }
 
-    if (!adminEmail) {
+    if (!adminParam) {
       setError("Invalid QR: admin missing");
       return;
     }
@@ -35,16 +46,28 @@ export default function RoomAccess() {
     setLoading(true);
 
     try {
-      const q = query(
-        collection(db, "guests"),
-        where("adminEmail", "==", adminEmail),
-        where("mobile", "==", mobile),
-        where("isActive", "==", true) // ✅ will fail if admin checked out guest
-      );
+      let q;
+      
+      if (isEmail) {
+        // If QR has email, query by adminEmail
+        q = query(
+          collection(db, "guests"),
+          where("adminEmail", "==", adminParam),
+          where("guestMobile", "==", mobile), // ✅ FIXED: use guestMobile
+          where("isActive", "==", true)
+        );
+      } else {
+        // If QR has UID, query by adminId (recommended)
+        q = query(
+          collection(db, "guests"),
+          where("adminId", "==", adminParam),
+          where("guestMobile", "==", mobile), // ✅ FIXED: use guestMobile
+          where("isActive", "==", true)
+        );
+      }
 
       const snap = await getDocs(q);
 
-      // ✅ if admin checked out → guest doc becomes isActive:false → snap.empty
       if (snap.empty) {
         setError(
           "No active booking found. This guest may have checked out or access has expired."
@@ -52,7 +75,9 @@ export default function RoomAccess() {
         return;
       }
 
-      const guest = snap.docs[0].data();
+      const guestDoc = snap.docs[0];
+      const guest = guestDoc.data();
+      const guestId = guestDoc.id;
 
       // expiry check
       const checkout = guest.checkoutAt?.toDate?.();
@@ -69,10 +94,11 @@ export default function RoomAccess() {
 
       navigate("/dashboard", {
         state: {
-          guestName: guest.guestName,
+          guestId: guestId,
+          guestName: guest.guestName || "Guest",
           roomNumber: guest.roomNumber,
-          adminEmail,
-          mobile,
+          adminEmail: guest.adminEmail,
+          mobile: guest.guestMobile,
           adminId: guest.adminId,
         },
       });
@@ -155,7 +181,7 @@ export default function RoomAccess() {
                 </svg>
               </div>
               <div>
-                <div style={styles.infoLabel}>Hotel Admin</div>
+                <div style={styles.infoLabel}>Hotel ID</div>
                 <div style={styles.infoValue}>{maskedAdmin}</div>
               </div>
             </div>
